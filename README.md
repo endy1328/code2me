@@ -93,7 +93,18 @@ CLI JSON 출력에는 선택된 `profileId` 외에도 `profileDetection.score`, 
 - `profile`: 프로젝트 유형을 어떻게 해석할지 결정하는 분석 프리셋
 - `adapter`: 특정 파일/기술 신호를 읽는 개별 추출기
 
-즉 사용자는 보통 adapter를 직접 고르는 대신 `profile`을 선택하고, 그 profile이 필요한 adapter 묶음을 내부에서 결정한다. 현재 구현에서는 `Legacy Java EE` 프로파일이 `web-xml`, `spring-xml`, `java-source-basic`, `jsp-view`, `ibatis-sql-map`, `mybatis-mapper`, `sitemesh-config`, `ant-build-xml`을 묶어서 실행한다.
+쉽게 말하면, 사용자가 직접 고르는 것은 보통 `분석 전략(profile)`이고, adapter는 그 전략 안에서 자동으로 실행되는 `세부 분석기`다.
+
+예를 들어 사용자가 `--profile legacy-java-ee`를 선택하면, 내부에서는 “이 프로젝트를 Legacy Java EE 방식으로 읽겠다”는 뜻이 된다. 그러면 도구가 알아서 `web.xml`, Spring XML, Java 소스, JSP, iBATIS/MyBatis mapper, SiteMesh 설정, `build.xml`을 읽는 adapter들을 묶어서 실행한다. 사용자가 `web-xml`, `jsp-view`, `mybatis-mapper`를 하나씩 외울 필요는 없다.
+
+즉 구조는 아래처럼 이해하면 된다.
+
+1. 사용자는 프로젝트 유형에 맞는 `profile`을 고른다.
+2. profile이 필요한 adapter 목록을 내부에서 결정한다.
+3. 각 adapter가 자기 담당 파일을 읽고 부분 결과를 만든다.
+4. 분석 코어가 그 결과를 병합해서 최종 그래프와 리포트를 만든다.
+
+현재 구현에서는 `Legacy Java EE` 프로파일이 `ant-build-xml`, `web-xml`, `spring-xml`, `java-source-basic`, `ibatis-sql-map`, `mybatis-mapper`, `jsp-view`, `sitemesh-config`를 한 세트로 실행한다.
 
 그래서 기본 사용 흐름은 이렇다.
 

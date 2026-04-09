@@ -8,6 +8,7 @@ import {
   renderInteractiveHtmlReport,
   renderMarkdownSummary,
   renderRawHtmlReport,
+  renderSplitFlowHtmlReports,
 } from "./report.js";
 
 export interface OutputPaths {
@@ -19,6 +20,10 @@ export interface OutputPaths {
   explorePath: string;
   evidencePath: string;
   rawPath: string;
+  screenFlowsPath: string;
+  apiFlowsPath: string;
+  flowDetailsPath: string;
+  architecturePath: string;
   internalProjectDir: string;
   internalSnapshotPath: string;
   internalHistoryPath: string;
@@ -27,6 +32,10 @@ export interface OutputPaths {
   internalExplorePath: string;
   internalEvidencePath: string;
   internalRawPath: string;
+  internalScreenFlowsPath: string;
+  internalApiFlowsPath: string;
+  internalFlowDetailsPath: string;
+  internalArchitecturePath: string;
   targetWriteError?: string;
 }
 
@@ -57,6 +66,10 @@ export function getOutputPaths(projectRoot: string, projectId: string): OutputPa
     explorePath: join(projectDir, "explore.html"),
     evidencePath: join(projectDir, "evidence.html"),
     rawPath: join(projectDir, "raw.html"),
+    screenFlowsPath: join(projectDir, "screen-flows.html"),
+    apiFlowsPath: join(projectDir, "api-flows.html"),
+    flowDetailsPath: join(projectDir, "flow-details.html"),
+    architecturePath: join(projectDir, "architecture-context.html"),
     internalProjectDir,
     internalSnapshotPath: join(internalProjectDir, "snapshot.json"),
     internalHistoryPath: join(internalProjectDir, "history.jsonl"),
@@ -65,6 +78,10 @@ export function getOutputPaths(projectRoot: string, projectId: string): OutputPa
     internalExplorePath: join(internalProjectDir, "explore.html"),
     internalEvidencePath: join(internalProjectDir, "evidence.html"),
     internalRawPath: join(internalProjectDir, "raw.html"),
+    internalScreenFlowsPath: join(internalProjectDir, "screen-flows.html"),
+    internalApiFlowsPath: join(internalProjectDir, "api-flows.html"),
+    internalFlowDetailsPath: join(internalProjectDir, "flow-details.html"),
+    internalArchitecturePath: join(internalProjectDir, "architecture-context.html"),
   };
 }
 
@@ -77,12 +94,20 @@ async function writeOutputSet(
   explorePath: string,
   evidencePath: string,
   rawPath: string,
+  screenFlowsPath: string,
+  apiFlowsPath: string,
+  flowDetailsPath: string,
+  architecturePath: string,
   payload: string,
   summary: string,
   report: string,
   explore: string,
   evidence: string,
   raw: string,
+  screenFlows: string,
+  apiFlows: string,
+  flowDetails: string,
+  architecture: string,
   historyRecord: string,
 ): Promise<void> {
   await mkdir(projectDir, { recursive: true });
@@ -92,6 +117,10 @@ async function writeOutputSet(
   await writeFile(explorePath, explore, "utf8");
   await writeFile(evidencePath, evidence, "utf8");
   await writeFile(rawPath, raw, "utf8");
+  await writeFile(screenFlowsPath, screenFlows, "utf8");
+  await writeFile(apiFlowsPath, apiFlows, "utf8");
+  await writeFile(flowDetailsPath, flowDetails, "utf8");
+  await writeFile(architecturePath, architecture, "utf8");
   await appendFile(historyPath, historyRecord + "\n", "utf8");
 }
 
@@ -103,6 +132,7 @@ export async function writeSnapshot(projectRoot: string, projectId: string, snap
   const explore = renderExploreHtmlReport(snapshot);
   const evidence = renderEvidenceHtmlReport(snapshot);
   const raw = renderRawHtmlReport(snapshot);
+  const splitPages = renderSplitFlowHtmlReports(snapshot);
   const historyRecord = JSON.stringify({
     createdAt: snapshot.createdAt,
     profileId: snapshot.profileId,
@@ -121,12 +151,20 @@ export async function writeSnapshot(projectRoot: string, projectId: string, snap
     outputPaths.internalExplorePath,
     outputPaths.internalEvidencePath,
     outputPaths.internalRawPath,
+    outputPaths.internalScreenFlowsPath,
+    outputPaths.internalApiFlowsPath,
+    outputPaths.internalFlowDetailsPath,
+    outputPaths.internalArchitecturePath,
     payload,
     summary,
     report,
     explore,
     evidence,
     raw,
+    splitPages.screenFlows,
+    splitPages.apiFlows,
+    splitPages.flowDetails,
+    splitPages.architecture,
     historyRecord,
   );
 
@@ -140,12 +178,20 @@ export async function writeSnapshot(projectRoot: string, projectId: string, snap
       outputPaths.explorePath,
       outputPaths.evidencePath,
       outputPaths.rawPath,
+      outputPaths.screenFlowsPath,
+      outputPaths.apiFlowsPath,
+      outputPaths.flowDetailsPath,
+      outputPaths.architecturePath,
       payload,
       summary,
       report,
       explore,
       evidence,
       raw,
+      splitPages.screenFlows,
+      splitPages.apiFlows,
+      splitPages.flowDetails,
+      splitPages.architecture,
       historyRecord,
     );
   } catch (error) {

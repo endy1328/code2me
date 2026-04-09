@@ -748,6 +748,171 @@ describe("interactive report entry flow synthesis", () => {
     expect(entrySection?.actions?.some((action) => action.target === "/admin/detail.as")).toBe(true);
   });
 
+  it("uses handler-level service calls in flow summary when controller-level data flow points elsewhere", () => {
+    const projectId = "summary-service-project";
+    const snapshot: AnalysisSnapshot = {
+      projectId,
+      profileId: "legacy-java-ee",
+      createdAt: "2026-04-09T00:00:00.000Z",
+      nodes: [
+        createNode({
+          id: "route-1",
+          type: "route",
+          name: "dispatcher",
+          displayName: "dispatcher",
+          projectId,
+          path: "app/WEB-INF/web.xml",
+          sourceAdapterIds: ["web-xml"],
+          confidence: "high",
+          evidence: [],
+        }),
+        createNode({
+          id: "controller-1",
+          type: "controller",
+          name: "com.example.ContentCategoryAdminAction",
+          displayName: "contentCategoryAction",
+          projectId,
+          path: "app/src/com/example/ContentCategoryAdminAction.java",
+          sourceAdapterIds: ["spring-xml", "java-source-basic"],
+          confidence: "medium",
+          evidence: [],
+          metadata: {
+            beanId: "contentCategoryAction",
+            className: "com.example.ContentCategoryAdminAction",
+            handlerMappingPatterns: ["/contentcategory/*.as"],
+            requestMappings: ["/contentcategory/list.as"],
+            requestHandlers: [
+              {
+                methodName: "getContentCategoryList",
+                requestMappings: ["/contentcategory/list.as"],
+                viewNames: ["contentCategory/contentCategoryList"],
+                serviceCalls: [
+                  {
+                    targetType: "service",
+                    targetName: "com.example.CategoryService",
+                    methodName: "getCategoryContentList",
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+        createNode({
+          id: "category-service",
+          type: "service",
+          name: "com.example.CategoryService",
+          displayName: "CategoryService",
+          projectId,
+          path: "app/src/com/example/CategoryService.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "medium",
+          evidence: [],
+        }),
+        createNode({
+          id: "shop-service",
+          type: "service",
+          name: "com.example.ShopCategoryService",
+          displayName: "ShopCategoryService",
+          projectId,
+          path: "app/src/com/example/ShopCategoryService.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "medium",
+          evidence: [],
+        }),
+        createNode({
+          id: "view-1",
+          type: "view",
+          name: "contentCategory/contentCategoryList",
+          displayName: "contentCategory/contentCategoryList",
+          projectId,
+          path: "app/WEB-INF/jsp/contentCategory/contentCategoryList.jsp",
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          evidence: [],
+        }),
+      ],
+      edges: [
+        createEdge({
+          id: "render-1",
+          type: "renders",
+          from: "controller-1",
+          to: "view-1",
+          projectId,
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          directional: true,
+          evidence: [],
+          metadata: {
+            handlerMethods: ["getContentCategoryList"],
+          },
+        }),
+        createEdge({
+          id: "depends-category",
+          type: "depends_on",
+          from: "controller-1",
+          to: "category-service",
+          projectId,
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "medium",
+          directional: true,
+          evidence: [],
+        }),
+        createEdge({
+          id: "depends-shop",
+          type: "depends_on",
+          from: "controller-1",
+          to: "shop-service",
+          projectId,
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "medium",
+          directional: true,
+          evidence: [],
+        }),
+      ],
+      entryPoints: [
+        createEntryPoint({
+          id: "entry-1",
+          type: "web_entry",
+          targetEntityId: "route-1",
+          projectId,
+          title: "dispatcher",
+          reason: "Mapped by web.xml",
+          priority: 100,
+          sourceAdapterIds: ["web-xml"],
+          confidence: "high",
+          metadata: {
+            urlPattern: "*.as",
+            contextConfigLocation: "WEB-INF/dispatcher-servlet.xml",
+          },
+        }),
+      ],
+      warnings: [],
+      artifacts: [
+        {
+          id: "artifact-view-resolver",
+          type: "spring-view-resolver",
+          projectId,
+          producerAdapterId: "spring-xml",
+          payload: {
+            file: "app/WEB-INF/dispatcher-servlet.xml",
+            beanName: "viewResolver",
+            className: "org.springframework.web.servlet.view.InternalResourceViewResolver",
+            prefix: "/WEB-INF/jsp/",
+            suffix: ".jsp",
+          },
+        },
+      ],
+    };
+
+    const report = extractReportData(renderInteractiveHtmlReport(snapshot));
+    const detail = report.flowDetails.find((item) => item.title?.includes("/contentcategory/list.as") === true);
+    const businessSection = detail?.sections?.find((section) => section.key === "detailBusinessSteps");
+
+    expect(detail?.summary).toBe("/contentcategory/list.as -> contentCategoryAction -> CategoryService -> - -> contentCategory/contentCategoryList.jsp");
+    expect(businessSection?.lines).toContain("business path: contentCategoryAction -> CategoryService -> -");
+    expect(detail?.summary).not.toContain("ShopCategoryService");
+  });
+
   it("shows dispatcher routing and view resolver context in framework details", () => {
     const projectId = "framework-project";
     const snapshot: AnalysisSnapshot = {
@@ -1391,5 +1556,78 @@ describe("interactive report entry flow synthesis", () => {
     const report = extractReportData(renderInteractiveHtmlReport(snapshot));
     expect(report.screenFlowCards).toHaveLength(1);
     expect(report.screenFlowCards[0]?.variantCount).toBe(2);
+  });
+
+  it("keeps full flow records searchable in large snapshot mode", () => {
+    const projectId = "large-search-project";
+    const fillerNodes = Array.from({ length: 6001 }, (_, index) =>
+      createNode({
+        id: `filler-${index}`,
+        type: "config",
+        name: `config-${index}`,
+        displayName: `config-${index}`,
+        projectId,
+        path: `app/config/${index}.xml`,
+        sourceAdapterIds: ["spring-xml"],
+        confidence: "low",
+        evidence: [],
+      }),
+    );
+    const flowNodes = Array.from({ length: 45 }, (_, index) => [
+      createNode({
+        id: `controller-${index}`,
+        type: "controller",
+        name: `com.example.ContentCategoryController${index}`,
+        displayName: `ContentCategoryController${index}`,
+        projectId,
+        path: `app/src/com/example/ContentCategoryController${index}.java`,
+        sourceAdapterIds: ["java-source-basic"],
+        confidence: "medium",
+        evidence: [],
+        metadata: {
+          requestMappings: [`/contentcategory/${index}/list.as`],
+        },
+      }),
+      createNode({
+        id: `view-${index}`,
+        type: "view",
+        name: `contentcategory-${index}-list`,
+        displayName: `contentcategory-${index}-list`,
+        projectId,
+        path: `app/WebContent/WEB-INF/jsp/contentcategory/${index}/list.jsp`,
+        sourceAdapterIds: ["jsp-view"],
+        confidence: "high",
+        evidence: [],
+      }),
+    ]).flat();
+    const flowEdges = Array.from({ length: 45 }, (_, index) =>
+      createEdge({
+        id: `render-${index}`,
+        type: "renders",
+        from: `controller-${index}`,
+        to: `view-${index}`,
+        projectId,
+        sourceAdapterIds: ["jsp-view"],
+        confidence: "high",
+        directional: true,
+        evidence: [],
+      }),
+    );
+
+    const html = renderInteractiveHtmlReport({
+      projectId,
+      profileId: "legacy-java-ee",
+      createdAt: "2026-04-09T00:00:00.000Z",
+      nodes: [...fillerNodes, ...flowNodes],
+      edges: flowEdges,
+      entryPoints: [],
+      warnings: [],
+      artifacts: [],
+    });
+    const report = extractReportData(html);
+
+    expect(report.screenFlowCards).toHaveLength(45);
+    expect(report.flowDetails.some((detail) => detail.title?.includes("/contentcategory/44/list.as"))).toBe(true);
+    expect(html).toContain('const previewItems = hasActiveFilter() ? filtered : filtered.slice(0, 40);');
   });
 });

@@ -290,6 +290,16 @@ interface ReportPayload {
     explore: string;
     evidence: string;
     raw: string;
+    screenFlows: string;
+    apiFlows: string;
+    flowDetails: string;
+    architecture: string;
+  };
+  flowTotals: {
+    screenFlowCards: number;
+    apiFlowCards: number;
+    flowDetails: number;
+    dataFlowCards: number;
   };
   snapshotTotals: {
     nodes: number;
@@ -1503,8 +1513,8 @@ function buildRequestFlowCards(
       type: isScreenFlow ? "screen_flow_detail" : "api_flow_detail",
       title,
       summary: isScreenFlow
-        ? `${routeTitle} -> ${card.controller ?? "-"} -> ${primaryDataMatch?.service ?? "-"} -> ${primaryDataMatch?.dao ?? "-"} -> ${shortenPath(card.view) ?? "screen"}`
-        : `${routeTitle} -> ${card.controller ?? "-"} -> ${primaryDataMatch?.service ?? "-"} -> ${primaryDataMatch?.dao ?? "-"} -> API response`,
+        ? `${routeTitle} -> ${card.controller ?? "-"} -> ${displayedService ?? "-"} -> ${primaryDataMatch?.dao ?? "-"} -> ${shortenPath(card.view) ?? "screen"}`
+        : `${routeTitle} -> ${card.controller ?? "-"} -> ${displayedService ?? "-"} -> ${primaryDataMatch?.dao ?? "-"} -> API response`,
       confidence: card.confidence,
       relatedDataSearchTerm: card.relatedDataSearchTerm,
       sections,
@@ -1938,6 +1948,16 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       explore: "explore.html",
       evidence: "evidence.html",
       raw: "raw.html",
+      screenFlows: "screen-flows.html",
+      apiFlows: "api-flows.html",
+      flowDetails: "flow-details.html",
+      architecture: "architecture-context.html",
+    },
+    flowTotals: {
+      screenFlowCards: screenFlowCards.length,
+      apiFlowCards: apiFlowCards.length,
+      flowDetails: enrichedFlowDetails.length,
+      dataFlowCards: dataFlowCards.length,
     },
     snapshotTotals: {
       nodes: snapshot.nodes.length,
@@ -2069,6 +2089,8 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       sourceTab: "진입 위치",
       backToList: "원래 목록으로 돌아가기",
       selectedFlowHint: "지금 보고 있는 흐름과 진입 위치를 먼저 확인한 뒤 상세 단계를 읽으면 된다.",
+      openFullPage: "전체 목록 페이지 열기",
+      largeFlowPreviewNotice: "대형 프로젝트라서 이 탭은 미리보기만 보여준다. 전체 목록은 분리 페이지에서 연다.",
     },
     en: {
       reportTag: "Interactive analysis report",
@@ -2190,6 +2212,8 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       sourceTab: "Opened From",
       backToList: "Back to Source List",
       selectedFlowHint: "Check the selected flow and where it came from before reading the detailed steps.",
+      openFullPage: "Open Full Page",
+      largeFlowPreviewNotice: "This tab shows only a preview for large projects. Open the split page for the full list.",
     },
   };
 
@@ -2398,10 +2422,79 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
     '    viewCards.addEventListener("click", () => { state.viewMode = "cards"; localStorage.setItem("code2me-view-mode", state.viewMode); invalidatePanelCache(); render(); });',
     '    function renderStartHere() { const guides = [t("startHereGuide1"), t("startHereGuide2"), t("startHereGuide3")].map((line) => \'<div class="secondary">• \' + esc(line) + "</div>").join(""); const bootstrapItems = renderList(report.frameworkFlowCards.filter(matchesCommon), (flow) => frameworkFlowHtml(flow, true)); const screenItems = renderList(report.screenFlowCards.filter(matchesCommon).slice(0, 5), (flow) => requestFlowHtml(flow, true)); const apiItems = renderList(report.apiFlowCards.filter(matchesCommon).slice(0, 5), (flow) => requestFlowHtml(flow, true)); const keyItems = renderList([{ id: "flows" }], () => itemHtml(t("keyFlows"), [esc(t("screenCount") + ": " + report.screenFlowCards.length), esc(t("apiCount") + ": " + report.apiFlowCards.length), esc(t("dataCount") + ": " + report.dataFlowCards.length)], [], true)); return sectionHtml(t("howToRead"), guides, false) + sectionHtml(t("bootstrapSummary"), bootstrapItems, false) + sectionHtml(t("representativeScreenFlows"), screenItems, false) + sectionHtml(t("representativeApiFlows"), apiItems, false) + sectionHtml(t("projectSummary"), keyItems, false); }',
     '    function renderFrameworkFlow() { const filtered = report.frameworkFlowCards.filter(matchesCommon); const items = renderList(filtered, (card) => frameworkFlowHtml(card, state.viewMode === "list")); return sectionHtml(titleWithCount(t("frameworkFlow"), filtered.length), items, true); }',
-    '    function renderScreenFlow() { const filtered = report.screenFlowCards.filter(matchesCommon); const items = renderList(filtered, (card) => requestFlowHtml(card, state.viewMode === "list")); return sectionHtml(titleWithCount(t("screenFlow"), filtered.length), items, true); }',
-    '    function renderApiFlow() { const filtered = report.apiFlowCards.filter(matchesCommon); const items = renderList(filtered, (card) => requestFlowHtml(card, state.viewMode === "list")); return sectionHtml(titleWithCount(t("apiFlow"), filtered.length), items, true); }',
-    '    function renderFlowDetail() { const detail = report.flowDetails.find((item) => item.id === state.selectedFlowId); if (!detail) { return sectionHtml(t("flowDetail"), \'<div class="empty">\' + esc(t("flowDetailEmpty")) + "</div>", false); } const sections = detail.sections.map((section) => { const linesHtml = section.lines.map((line) => \'<div class="secondary">\' + esc(line) + "</div>").join(""); const actionHtml = (section.actions || []).map((action) => { const nextText = action.nextTitle ? \' <span class="secondary">→ \' + esc(action.nextTitle) + "</span>" : ""; const openBtn = action.nextDetailId ? \' <button class="action-btn" type="button" data-open-flow-detail="\' + esc(action.nextDetailId) + \'">\' + esc(t("nextFlow")) + "</button>" : ""; return \'<div class="action-row"><span class="secondary">\' + esc(action.kind + ": " + action.label + " -> " + action.target) + "</span>" + nextText + openBtn + "</div>"; }).join(""); return \'<div class="detail-section"><h4>\' + esc(t(section.key)) + \'</h4><div class="list">\' + linesHtml + actionHtml + "</div></div>"; }).join(""); const actions = detail.relatedDataSearchTerm ? \'<div class="action-row"><button class="action-btn" type="button" data-open-data-flow="\' + esc(detail.relatedDataSearchTerm) + \'">\' + esc(t("openDataFlow")) + "</button></div>" : ""; const contextBar = \'<div class="context-bar" aria-live="polite"><div class="context-top"><div><div class="context-breadcrumb">\' + esc(sourceTabLabel(detail) + " > " + detail.title + " > " + t("flowDetail")) + \'</div><strong>\' + esc(t("currentSelection")) + \'</strong><div class="secondary">\' + esc(t("selectedFlowHint")) + "</div></div><div class="pill-row">\' + [pill(detail.type), pill(confidenceLabel(detail.confidence), "conf-" + detail.confidence)].join("") + \'</div></div><div class="context-grid"><div class="context-cell"><strong>\' + esc(t("selectedRoute")) + \'</strong><span>\' + esc(detailPrimaryRoute(detail)) + \'</span></div><div class="context-cell"><strong>\' + esc(t("flowKind")) + \'</strong><span>\' + esc(sourceTabLabel(detail)) + \'</span></div><div class="context-cell"><strong>\' + esc(t("controller")) + \'</strong><span>\' + esc(detailControllerName(detail)) + \'</span></div><div class="context-cell"><strong>\' + esc(t("resultTarget")) + \'</strong><span>\' + esc(detailResultTarget(detail)) + \'</span></div></div><div class="context-actions"><button class="action-btn" type="button" data-tab-target="\' + esc(inferSourceTab(detail)) + \'">\' + esc(t("backToList")) + "</button></div></div>"; const summary = \'<div class="item wide"><div class="item-top"><div><strong>\' + esc(detail.title) + \'</strong></div><div class="pill-row">\' + [pill(detail.type), pill(confidenceLabel(detail.confidence), "conf-" + detail.confidence)].join("") + \'</div></div><div class="secondary">\' + esc(detail.summary) + "</div>" + actions + "</div>"; return sectionHtml(t("selectedFlow"), contextBar + summary + \'<div class="detail-panel">\' + sections + "</div>", false); }',
-    '    function renderSupporting() { const filteredData = report.dataFlowCards.filter(matchesCommon); const dataItems = renderList(filteredData, (card) => { const pathTitle = [card.controller || "-", card.service || card.dao || "-", card.dao || card.mapper || card.sql ? (card.dao || card.mapper || card.sql || "-") : null].filter(Boolean).join(" → "); const requestSummary = (card.routeValues || []).length > 0 ? ((card.routeValues || []).slice(0, 2).join(", ") + ((card.routeValues || []).length > 2 ? " +" + String((card.routeValues || []).length - 2) : "")) : (card.route || "-"); const requestDetails = (card.routeValues || []).length > 0 ? \'<details class="details"><summary>\' + esc(t("showAllRequests") + " (" + card.routeValues.length + ")") + \'</summary><div class="details-body"><div class="secondary">\' + esc(t("requestList")) + "</div>" + card.routeValues.map((value) => \'<div class="secondary">\' + esc(value) + "</div>").join("") + "</div></details>" : ""; const lines = [esc(t("dataFlowMeaning")), esc(t("linkedRequests") + ": " + requestSummary), esc(t("controller") + ": " + (card.controller || "-")), esc(t("service") + ": " + (card.service || t("notConfirmed"))), esc(t("dao") + ": " + (card.dao || t("notConfirmed"))), esc(t("mapper") + ": " + (card.mapper || t("notLinked"))), esc(t("sql") + ": " + (card.sql || t("notTracedYet"))), esc(t("evidenceBasis") + ": " + (card.evidenceLabel || t("notConfirmed")))]; return \'<div class="item\' + (state.viewMode === "list" ? " wide" : "") + \'"><div class="item-top"><div><strong>\' + esc(pathTitle || (card.route || card.id)) + \'</strong></div><div class="pill-row">\' + [pill(t("possibleBackendPath")), pill(card.type), pill(confidenceLabel(card.confidence), "conf-" + card.confidence)].join("") + \'</div></div>\' + lines.map((line) => \'<div class="secondary">\' + line + "</div>").join("") + requestDetails + "</div>"; }); const filteredLibraries = report.libraryAnchorCards.filter(matchesCommon); const libraryItems = renderList(filteredLibraries, (card) => itemHtml(card.title, [esc(t("path") + ": " + card.modulePath), esc(t("libraryClasses") + ": " + card.classCount), esc(t("libraryConfigs") + ": " + card.configCount), esc(t("libraryServices") + ": " + card.serviceCount), esc(t("libraryDaos") + ": " + card.daoCount), esc(t("topControllers") + ": " + ((card.topControllers || []).join(", ") || "-"))], [pill(card.type)], true)); const structures = report.snapshot.nodes.filter((node) => ["module", "deployment_unit", "config"].includes(node.type)); const structureSummary = itemHtml(t("runtimeContext"), [esc(t("runtimeContextGuide")), esc(t("modulesCount") + ": " + String(structures.filter((node) => node.type === "module").length)), esc(t("deploymentsCount") + ": " + String(structures.filter((node) => node.type === "deployment_unit").length)), esc(t("configsCount") + ": " + String(structures.filter((node) => node.type === "config").length))], [], true) + \'<div class="action-row"><button class="action-btn" type="button" data-tab-target="explore">\' + esc(t("viewInExplore")) + "</button></div>"; return sectionHtml(titleWithCount(t("relatedData"), filteredData.length), dataItems, true) + sectionHtml(titleWithCount(t("sharedModules"), filteredLibraries.length), libraryItems, false) + sectionHtml(t("runtimeContext"), structureSummary, false); }',
+    '    function hasActiveFilter() { return Boolean(state.search || state.type || state.confidence); }',
+    '    function renderLargePreview(tabKey, detailPath, previewCount, totalCount, itemsHtml) {',
+    '      const summary = itemHtml(t(tabKey), [esc(t("largeFlowPreviewNotice")), esc(t("resultCount") + ": " + String(totalCount)), esc("preview: " + String(previewCount))], [], true);',
+    '      const actions = \'<div class="action-row"><a class="action-btn" href="\' + esc(detailPath) + \'" target="_blank" rel="noreferrer">\' + esc(t("openFullPage")) + "</a></div>";',
+    '      return sectionHtml(titleWithCount(t(tabKey), totalCount), summary + actions + itemsHtml, false);',
+    '    }',
+    '    function renderScreenFlow() {',
+    '      const filtered = report.screenFlowCards.filter(matchesCommon);',
+    '      if (report.largeSnapshotMode) {',
+    '        const previewItems = hasActiveFilter() ? filtered : filtered.slice(0, 40);',
+    '        const items = renderList(previewItems, (card) => requestFlowHtml(card, true));',
+    '        return renderLargePreview("screenFlow", report.detailPaths.screenFlows, previewItems.length, filtered.length, items);',
+    '      }',
+    '      return sectionHtml(titleWithCount(t("screenFlow"), filtered.length), renderList(filtered, (card) => requestFlowHtml(card, state.viewMode === "list")), true);',
+    '    }',
+    '    function renderApiFlow() {',
+    '      const filtered = report.apiFlowCards.filter(matchesCommon);',
+    '      if (report.largeSnapshotMode) {',
+    '        const previewItems = hasActiveFilter() ? filtered : filtered.slice(0, 40);',
+    '        const items = renderList(previewItems, (card) => requestFlowHtml(card, true));',
+    '        return renderLargePreview("apiFlow", report.detailPaths.apiFlows, previewItems.length, filtered.length, items);',
+    '      }',
+    '      return sectionHtml(titleWithCount(t("apiFlow"), filtered.length), renderList(filtered, (card) => requestFlowHtml(card, state.viewMode === "list")), true);',
+    '    }',
+    '    function renderFlowDetail() {',
+    '      if (report.largeSnapshotMode) {',
+    '        const filtered = report.flowDetails.filter(matchesCommon);',
+    '        const visible = hasActiveFilter() ? filtered : filtered.slice(0, 8);',
+    '        const previewItems = visible.map((detail) => itemHtml(detail.title, [esc(detail.summary)], [pill(detail.type), pill(confidenceLabel(detail.confidence), "conf-" + detail.confidence)], true)).join("");',
+    '        return renderLargePreview("flowDetail", report.detailPaths.flowDetails, visible.length, filtered.length, previewItems);',
+    '      }',
+    '      const detail = report.flowDetails.find((item) => item.id === state.selectedFlowId);',
+    '      if (!detail) {',
+    '        return sectionHtml(t("flowDetail"), \'<div class="empty">\' + esc(t("flowDetailEmpty")) + "</div>", false);',
+    '      }',
+    '      const sections = detail.sections.map((section) => {',
+    '        const linesHtml = section.lines.map((line) => \'<div class="secondary">\' + esc(line) + "</div>").join("");',
+    '        const actionHtml = (section.actions || []).map((action) => {',
+    '          const nextText = action.nextTitle ? \' <span class="secondary">→ \' + esc(action.nextTitle) + "</span>" : "";',
+    '          const openBtn = action.nextDetailId ? \' <button class="action-btn" type="button" data-open-flow-detail="\' + esc(action.nextDetailId) + \'">\' + esc(t("nextFlow")) + "</button>" : "";',
+    '          return \'<div class="action-row"><span class="secondary">\' + esc(action.kind + ": " + action.label + " -> " + action.target) + "</span>" + nextText + openBtn + "</div>";',
+    '        }).join("");',
+    '        return \'<div class="detail-section"><h4>\' + esc(t(section.key)) + \'</h4><div class="list">\' + linesHtml + actionHtml + "</div></div>";',
+    '      }).join("");',
+    '      const actions = detail.relatedDataSearchTerm ? \'<div class="action-row"><button class="action-btn" type="button" data-open-data-flow="\' + esc(detail.relatedDataSearchTerm) + \'">\' + esc(t("openDataFlow")) + "</button></div>" : "";',
+    '      const contextBar = [',
+    '        \'<div class="context-bar" aria-live="polite"><div class="context-top"><div><div class="context-breadcrumb">\' + esc(sourceTabLabel(detail) + " > " + detail.title + " > " + t("flowDetail")) + \'</div><strong>\' + esc(t("currentSelection")) + \'</strong><div class="secondary">\' + esc(t("selectedFlowHint")) + \'</div></div>\',',
+    '        \'<div class="pill-row">\' + [pill(detail.type), pill(confidenceLabel(detail.confidence), "conf-" + detail.confidence)].join("") + \'</div></div>\',',
+    '        \'<div class="context-grid"><div class="context-cell"><strong>\' + esc(t("selectedRoute")) + \'</strong><span>\' + esc(detailPrimaryRoute(detail)) + \'</span></div><div class="context-cell"><strong>\' + esc(t("flowKind")) + \'</strong><span>\' + esc(sourceTabLabel(detail)) + \'</span></div><div class="context-cell"><strong>\' + esc(t("controller")) + \'</strong><span>\' + esc(detailControllerName(detail)) + \'</span></div><div class="context-cell"><strong>\' + esc(t("resultTarget")) + \'</strong><span>\' + esc(detailResultTarget(detail)) + \'</span></div></div>\',',
+    '        \'<div class="context-actions"><button class="action-btn" type="button" data-tab-target="\' + esc(inferSourceTab(detail)) + \'">\' + esc(t("backToList")) + \'</button></div></div>\',',
+    '      ].join("");',
+    '      const summary = \'<div class="item wide"><div class="item-top"><div><strong>\' + esc(detail.title) + \'</strong></div><div class="pill-row">\' + [pill(detail.type), pill(confidenceLabel(detail.confidence), "conf-" + detail.confidence)].join("") + \'</div></div><div class="secondary">\' + esc(detail.summary) + "</div>" + actions + "</div>";',
+    '      return sectionHtml(t("selectedFlow"), contextBar + summary + \'<div class="detail-panel">\' + sections + "</div>", false);',
+    '    }',
+    '    function renderSupporting() {',
+    '      const filteredData = report.dataFlowCards.filter(matchesCommon);',
+    '      const visibleData = report.largeSnapshotMode && !hasActiveFilter() ? filteredData.slice(0, 40) : filteredData;',
+    '      const dataItems = renderList(visibleData, (card) => {',
+    '        const pathTitle = [card.controller || "-", card.service || card.dao || "-", card.dao || card.mapper || card.sql ? (card.dao || card.mapper || card.sql || "-") : null].filter(Boolean).join(" → ");',
+    '        const requestSummary = (card.routeValues || []).length > 0 ? ((card.routeValues || []).slice(0, 2).join(", ") + ((card.routeValues || []).length > 2 ? " +" + String((card.routeValues || []).length - 2) : "")) : (card.route || "-");',
+    '        const requestDetails = (card.routeValues || []).length > 0 ? \'<details class="details"><summary>\' + esc(t("showAllRequests") + " (" + card.routeValues.length + ")") + \'</summary><div class="details-body"><div class="secondary">\' + esc(t("requestList")) + "</div>" + card.routeValues.map((value) => \'<div class="secondary">\' + esc(value) + "</div>").join("") + "</div></details>" : "";',
+    '        const lines = [esc(t("dataFlowMeaning")), esc(t("linkedRequests") + ": " + requestSummary), esc(t("controller") + ": " + (card.controller || "-")), esc(t("service") + ": " + (card.service || t("notConfirmed"))), esc(t("dao") + ": " + (card.dao || t("notConfirmed"))), esc(t("mapper") + ": " + (card.mapper || t("notLinked"))), esc(t("sql") + ": " + (card.sql || t("notTracedYet"))), esc(t("evidenceBasis") + ": " + (card.evidenceLabel || t("notConfirmed")))];',
+    '        return \'<div class="item\' + (state.viewMode === "list" ? " wide" : "") + \'"><div class="item-top"><div><strong>\' + esc(pathTitle || (card.route || card.id)) + \'</strong></div><div class="pill-row">\' + [pill(t("possibleBackendPath")), pill(card.type), pill(confidenceLabel(card.confidence), "conf-" + card.confidence)].join("") + \'</div></div>\' + lines.map((line) => \'<div class="secondary">\' + line + "</div>").join("") + requestDetails + "</div>";',
+    '      });',
+    '      const filteredLibraries = report.libraryAnchorCards.filter(matchesCommon);',
+    '      const libraryItems = renderList(filteredLibraries, (card) => itemHtml(card.title, [esc(t("path") + ": " + card.modulePath), esc(t("libraryClasses") + ": " + card.classCount), esc(t("libraryConfigs") + ": " + card.configCount), esc(t("libraryServices") + ": " + card.serviceCount), esc(t("libraryDaos") + ": " + card.daoCount), esc(t("topControllers") + ": " + ((card.topControllers || []).join(", ") || "-"))], [pill(card.type)], true));',
+    '      const structures = report.snapshot.nodes.filter((node) => ["module", "deployment_unit", "config"].includes(node.type));',
+    '      const structureSummary = itemHtml(t("runtimeContext"), [esc(t("runtimeContextGuide")), esc(t("modulesCount") + ": " + String(structures.filter((node) => node.type === "module").length)), esc(t("deploymentsCount") + ": " + String(structures.filter((node) => node.type === "deployment_unit").length)), esc(t("configsCount") + ": " + String(structures.filter((node) => node.type === "config").length))], [], true) + \'<div class="action-row"><button class="action-btn" type="button" data-tab-target="explore">\' + esc(t("viewInExplore")) + "</button></div>";',
+    '      if (report.largeSnapshotMode) {',
+    '        return renderLargePreview("supporting", report.detailPaths.architecture, visibleData.length + filteredLibraries.length, filteredData.length + filteredLibraries.length, dataItems + libraryItems + structureSummary);',
+    '      }',
+    '      return sectionHtml(titleWithCount(t("relatedData"), filteredData.length), dataItems, true) + sectionHtml(titleWithCount(t("sharedModules"), filteredLibraries.length), libraryItems, false) + sectionHtml(t("runtimeContext"), structureSummary, false);',
+    '    }',
     '    function renderExplore() { const lines = [esc(t("largeSnapshotNotice")), esc("nodes: " + report.snapshotTotals.nodes), esc("edges: " + report.snapshotTotals.edges), esc("entry points: " + report.snapshotTotals.entryPoints)]; const actions = \'<div class="action-row"><a class="action-btn" href="\' + esc(report.detailPaths.explore) + \'" target="_blank" rel="noreferrer">\' + esc(t("explore")) + ".html</a></div>"; return sectionHtml(t("explore"), itemHtml(t("explore"), lines, [], true) + actions, false); }',
     '    function renderEvidence() { const lines = [esc(t("largeSnapshotNotice")), esc("artifacts: " + report.snapshotTotals.artifacts), esc("warnings: " + report.snapshotTotals.warnings)]; const actions = \'<div class="action-row"><a class="action-btn" href="\' + esc(report.detailPaths.evidence) + \'" target="_blank" rel="noreferrer">\' + esc(t("evidence")) + ".html</a></div>"; return sectionHtml(t("evidence"), itemHtml(t("artifactsTab"), lines, [], true) + actions, false); }',
     '    function renderRaw() { const actions = \'<div class="action-row"><a class="action-btn" href="\' + esc(report.detailPaths.raw) + \'" target="_blank" rel="noreferrer">raw.html</a><a class="action-btn" href="\' + esc(report.rawSnapshotPath) + \'" target="_blank" rel="noreferrer">\' + esc(t("openSnapshotFile")) + "</a></div>"; return sectionHtml(t("rawSnapshot"), itemHtml(t("rawSnapshot"), [esc("nodes: " + report.snapshotTotals.nodes), esc("edges: " + report.snapshotTotals.edges), esc("artifacts: " + report.snapshotTotals.artifacts)], [], true) + actions, false); }',
@@ -2532,6 +2625,141 @@ export function renderEvidenceHtmlReport(snapshot: AnalysisSnapshot): string {
   });
 }
 
+interface FlowReportData {
+  dataFlowCards: DataFlowCard[];
+  screenFlowCards: RequestFlowCard[];
+  apiFlowCards: RequestFlowCard[];
+  flowDetails: FlowDetailCard[];
+  frameworkFlowCards: FrameworkFlowCard[];
+  libraryAnchorCards: ReturnType<typeof collectLibraryAnchorCards>;
+}
+
+function buildFlowReportData(snapshot: AnalysisSnapshot): FlowReportData {
+  const dataFlowCards = collectDataFlowCards(snapshot);
+  const screenCards = enrichScreenCardsWithDataFlow(collectScreenCards(snapshot), dataFlowCards);
+  const { screenFlowCards, apiFlowCards, flowDetails } = buildRequestFlowCards(snapshot, screenCards, dataFlowCards);
+  const { frameworkFlowCards } = collectFrameworkFlowCards(snapshot, screenFlowCards, apiFlowCards);
+  const enrichedFlowDetails = enrichFlowDetailsWithBrowserEntry(
+    snapshot,
+    enrichFlowDetailsWithUiActions(
+      snapshot,
+      flowDetails,
+      [...screenFlowCards, ...apiFlowCards],
+    ),
+    [...screenFlowCards, ...apiFlowCards],
+  );
+  return {
+    dataFlowCards,
+    screenFlowCards,
+    apiFlowCards,
+    flowDetails: enrichedFlowDetails,
+    frameworkFlowCards,
+    libraryAnchorCards: collectLibraryAnchorCards(snapshot),
+  };
+}
+
+export function renderScreenFlowsHtmlReport(snapshot: AnalysisSnapshot, flowData?: FlowReportData): string {
+  const { screenFlowCards } = flowData ?? buildFlowReportData(snapshot);
+  return renderStandalonePage({
+    title: `code2me screen flows - ${snapshot.projectId}`,
+    heading: `${snapshot.projectId} Screen Flows`,
+    summaryLines: [
+      "Full screen flow list split out of report.html for large-project viewing.",
+      `screen flows: ${screenFlowCards.length}`,
+    ],
+    links: [
+      { href: "report.html", label: "report.html" },
+      { href: "flow-details.html", label: "flow-details.html" },
+    ],
+    sections: [
+      {
+        title: "Screen Flows",
+        items: screenFlowCards.map((card) =>
+          `${card.title} | route=${card.route ?? "-"} | controller=${card.controller ?? "-"} | action=${card.action ?? "-"} | view=${card.view ?? card.layout ?? "-"}`,
+        ),
+      },
+    ],
+  });
+}
+
+export function renderApiFlowsHtmlReport(snapshot: AnalysisSnapshot, flowData?: FlowReportData): string {
+  const { apiFlowCards } = flowData ?? buildFlowReportData(snapshot);
+  return renderStandalonePage({
+    title: `code2me api flows - ${snapshot.projectId}`,
+    heading: `${snapshot.projectId} API Flows`,
+    summaryLines: [
+      "Full API flow list split out of report.html for large-project viewing.",
+      `api flows: ${apiFlowCards.length}`,
+    ],
+    links: [
+      { href: "report.html", label: "report.html" },
+      { href: "flow-details.html", label: "flow-details.html" },
+    ],
+    sections: [
+      {
+        title: "API Flows",
+        items: apiFlowCards.map((card) =>
+          `${card.title} | route=${card.route ?? "-"} | controller=${card.controller ?? "-"} | action=${card.action ?? "-"} | response=${card.responseType ?? "-"}`,
+        ),
+      },
+    ],
+  });
+}
+
+export function renderFlowDetailsHtmlReport(snapshot: AnalysisSnapshot, flowData?: FlowReportData): string {
+  const { flowDetails } = flowData ?? buildFlowReportData(snapshot);
+  return renderStandalonePage({
+    title: `code2me flow details - ${snapshot.projectId}`,
+    heading: `${snapshot.projectId} Flow Details`,
+    summaryLines: [
+      "Full flow detail index split out of report.html for large-project viewing.",
+      `flow details: ${flowDetails.length}`,
+    ],
+    links: [
+      { href: "report.html", label: "report.html" },
+      { href: "screen-flows.html", label: "screen-flows.html" },
+      { href: "api-flows.html", label: "api-flows.html" },
+    ],
+    sections: [
+      {
+        title: "Flow Detail Summaries",
+        items: flowDetails.map((detail) => `${detail.title} | ${detail.summary}`),
+      },
+    ],
+  });
+}
+
+export function renderArchitectureContextHtmlReport(snapshot: AnalysisSnapshot, flowData?: FlowReportData): string {
+  const { dataFlowCards, libraryAnchorCards } = flowData ?? buildFlowReportData(snapshot);
+  return renderStandalonePage({
+    title: `code2me architecture context - ${snapshot.projectId}`,
+    heading: `${snapshot.projectId} Architecture Context`,
+    summaryLines: [
+      "Full architecture context split out of report.html for large-project viewing.",
+      `data access cards: ${dataFlowCards.length}`,
+      `shared module hubs: ${libraryAnchorCards.length}`,
+    ],
+    links: [
+      { href: "report.html", label: "report.html" },
+      { href: "explore.html", label: "explore.html" },
+    ],
+    sections: [
+      {
+        title: "Data Access Backbone",
+        items: dataFlowCards.map((card) =>
+          `${card.controller ?? "-"} -> ${card.service ?? "-"} -> ${card.dao ?? "-"} -> ${card.mapper ?? "-"} -> ${card.sql ?? "-"} | evidence=${card.evidenceLabel}`,
+        ),
+      },
+      {
+        title: "Shared Modules",
+        items: libraryAnchorCards.map((card) =>
+          `${card.title} | path=${card.modulePath} | class=${card.classCount} | config=${card.configCount} | service=${card.serviceCount} | dao=${card.daoCount}`,
+        ),
+      },
+    ],
+  });
+}
+
 export function renderRawHtmlReport(snapshot: AnalysisSnapshot): string {
   return renderStandalonePage({
     title: `code2me raw - ${snapshot.projectId}`,
@@ -2544,6 +2772,10 @@ export function renderRawHtmlReport(snapshot: AnalysisSnapshot): string {
     ],
     links: [
       { href: "report.html", label: "report.html" },
+      { href: "screen-flows.html", label: "screen-flows.html" },
+      { href: "api-flows.html", label: "api-flows.html" },
+      { href: "flow-details.html", label: "flow-details.html" },
+      { href: "architecture-context.html", label: "architecture-context.html" },
       { href: "explore.html", label: "explore.html" },
       { href: "evidence.html", label: "evidence.html" },
       { href: "snapshot.json", label: "snapshot.json" },
@@ -2560,4 +2792,19 @@ export function renderRawHtmlReport(snapshot: AnalysisSnapshot): string {
       },
     ],
   });
+}
+
+export function renderSplitFlowHtmlReports(snapshot: AnalysisSnapshot): {
+  screenFlows: string;
+  apiFlows: string;
+  flowDetails: string;
+  architecture: string;
+} {
+  const flowData = buildFlowReportData(snapshot);
+  return {
+    screenFlows: renderScreenFlowsHtmlReport(snapshot, flowData),
+    apiFlows: renderApiFlowsHtmlReport(snapshot, flowData),
+    flowDetails: renderFlowDetailsHtmlReport(snapshot, flowData),
+    architecture: renderArchitectureContextHtmlReport(snapshot, flowData),
+  };
 }
