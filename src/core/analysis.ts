@@ -9,6 +9,7 @@ export interface AnalyzeProjectInput {
   projectRoot: string;
   projectId: string;
   profile: AnalysisProfile;
+  adaptersOverride?: AnalyzerAdapter[];
   fileIndex?: FileIndex;
   onProgress?: (event: AnalyzeProgressEvent) => void;
 }
@@ -45,7 +46,7 @@ export async function analyzeProject(input: AnalyzeProjectInput): Promise<Analyz
 
   const fileIndex = input.fileIndex ?? await buildFileIndex(input.projectRoot);
   const upstreamResults = new Map<string, AdapterResult>();
-  const adapters = input.profile.getRequiredAdapters();
+  const adapters = input.adaptersOverride ?? input.profile.getRequiredAdapters();
   const runnableAdapters = adapters.filter((adapter) => adapter.canRun({
     projectId: input.projectId,
     projectRoot: input.projectRoot,
