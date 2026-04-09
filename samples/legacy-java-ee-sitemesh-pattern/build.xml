@@ -1,0 +1,6 @@
+<project name="legacy-sitemesh-pattern" default="package">
+  <target name="compile" />
+  <target name="package">
+    <war destfile="dist/legacy-sitemesh-pattern.war" webxml="src/main/webapp/WEB-INF/web.xml" />
+  </target>
+</project>

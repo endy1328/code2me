@@ -1,0 +1,5 @@
+<mapper namespace="com.example.legacy.lib.SampleDao">
+  <select id="selectSample" resultType="string">
+    SELECT 'sample'
+  </select>
+</mapper>

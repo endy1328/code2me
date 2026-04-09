@@ -1,0 +1,27 @@
+{
+  "name": "code2me",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Profile-driven code analyzer with Legacy Java EE first support",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "analyze": "tsx src/cli/index.ts analyze",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "fast-glob": "^3.3.3",
+    "fast-xml-parser": "^5.3.0",
+    "java-parser": "^3.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

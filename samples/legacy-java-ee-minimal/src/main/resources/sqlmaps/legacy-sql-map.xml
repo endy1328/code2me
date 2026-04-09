@@ -1,0 +1,5 @@
+<sqlMap namespace="com.example.legacy.lib.LegacyDao">
+  <select id="selectLegacy" resultClass="string">
+    SELECT 'legacy'
+  </select>
+</sqlMap>

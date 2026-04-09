@@ -1,0 +1,5 @@
+<beans>
+  <bean id="sampleController" class="com.example.legacy.web.SampleController" />
+  <bean id="sampleService" class="com.example.legacy.lib.SampleService" />
+  <bean id="sampleDao" class="com.example.legacy.lib.SampleDao" />
+</beans>

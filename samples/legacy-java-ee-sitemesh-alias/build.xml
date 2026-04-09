@@ -1,0 +1,6 @@
+<project name="legacy-sitemesh-alias" default="package">
+  <target name="package">
+    <mkdir dir="dist" />
+    <war destfile="dist/legacy-sitemesh-alias.war" webxml="src/main/webapp/WEB-INF/web.xml" />
+  </target>
+</project>

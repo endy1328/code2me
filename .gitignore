@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+coverage/
+*.tsbuildinfo
+
+# code2me generated outputs
+.code2me/
+.code2me-data/
+.code2me-result/
+
+# Editor / local workspace files
+.obsidian/
+.codex
+
+# AI tool local files
+.cursor/
+.cursorignore
+.claude/
+.claude-code/
+.aider*
+.continue/
+.roo/
+.windsurf/
+.copilot/
+
+# AI workflow / internal operating docs
+agent.md
+plan.md
+status.md
+verification.md
+worklog.md
+
+# OS / temp files
+.DS_Store
+*.log
+*.tmp
+tmp/

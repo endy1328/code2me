@@ -1,0 +1,7 @@
+<beans>
+  <bean id="aliasController" class="com.example.legacy.web.AliasController" />
+  <bean id="viewResolver" class="org.springframework.web.servlet.view.InternalResourceViewResolver">
+    <property name="prefix" value="/WEB-INF/jsp/" />
+    <property name="suffix" value=".jsp" />
+  </bean>
+</beans>

@@ -1,0 +1,515 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { parse } from "java-parser";
+import type { AdapterContext, AdapterInputSet, AdapterResult, AnalyzerAdapter } from "../core/adapter.js";
+import type { AdapterWarning, ArtifactRecord, GraphEdge, GraphNode } from "../core/model.js";
+import { edgeId, nodeId } from "../utils/id.js";
+
+function inferJavaRole(content: string, className: string): string {
+  if (/@Controller\b/.test(content) || className.endsWith("Controller") || className.endsWith("Action")) {
+    return "controller";
+  }
+  if (/@Service\b/.test(content) || className.endsWith("Service")) {
+    return "service";
+  }
+  if (/@Repository\b/.test(content) || className.endsWith("Dao") || className.endsWith("DAO")) {
+    return "dao";
+  }
+  return "class";
+}
+
+function extractPackageName(content: string): string | undefined {
+  return /^\s*package\s+([\w.]+)\s*;/m.exec(content)?.[1];
+}
+
+function extractImports(content: string): string[] {
+  return Array.from(content.matchAll(/^\s*import\s+([\w.]+)\s*;/gm)).map((match) => match[1]).filter(Boolean) as string[];
+}
+
+function extractClassName(content: string): string | undefined {
+  return /\b(class|interface)\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(content)?.[2];
+}
+
+function inferDependencyType(typeName: string): string {
+  if (typeName.endsWith("Controller") || typeName.endsWith("Action")) {
+    return "controller";
+  }
+  if (typeName.endsWith("Service")) {
+    return "service";
+  }
+  if (typeName.endsWith("Dao") || typeName.endsWith("DAO") || typeName.endsWith("Repository")) {
+    return "dao";
+  }
+  return "class";
+}
+
+function simplifyTypeName(rawType: string): string {
+  return rawType
+    .replace(/@\w+(?:\([^)]*\))?\s*/g, " ")
+    .replace(/\b(final|volatile|transient)\b/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\[\]/g, " ")
+    .trim()
+    .split(/\s+/)
+    .pop()
+    ?.replace(/\? extends |\? super /g, "")
+    ?? rawType.trim();
+}
+
+function resolveTypeName(typeName: string, imports: string[], packageName: string | undefined): string {
+  if (typeName.includes(".")) {
+    return typeName;
+  }
+  const imported = imports.find((value) => value.endsWith(`.${typeName}`));
+  if (imported) {
+    return imported;
+  }
+  return packageName ? `${packageName}.${typeName}` : typeName;
+}
+
+function extractParameterTypes(signature: string): string[] {
+  return signature
+    .split(",")
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .map((segment) => simplifyTypeName(segment))
+    .filter((value) => /^[A-Z][A-Za-z0-9_]*$/.test(value));
+}
+
+function extractTypedMembers(
+  content: string,
+  packageName: string | undefined,
+  imports: string[],
+): Array<{
+  memberName: string;
+  targetFqn: string;
+  targetType: string;
+  confidence: "medium" | "high";
+  evidenceKind: string;
+  evidenceValue: string;
+}> {
+  const members = new Map<string, {
+    memberName: string;
+    targetFqn: string;
+    targetType: string;
+    confidence: "medium" | "high";
+    evidenceKind: string;
+    evidenceValue: string;
+  }>();
+
+  const addMember = (
+    memberName: string,
+    simpleTypeName: string,
+    confidence: "medium" | "high",
+    evidenceKind: string,
+    evidenceValue: string,
+  ): void => {
+    const targetType = inferDependencyType(simpleTypeName);
+    if (targetType === "class") {
+      return;
+    }
+    const targetFqn = resolveTypeName(simpleTypeName, imports, packageName);
+    const existing = members.get(memberName);
+    if (!existing || (existing.confidence === "medium" && confidence === "high")) {
+      members.set(memberName, {
+        memberName,
+        targetFqn,
+        targetType,
+        confidence,
+        evidenceKind,
+        evidenceValue,
+      });
+    }
+  };
+
+  const fieldPattern = /((?:@\w+(?:\([^)]*\))?\s*)*)(?:private|protected|public)\s+(?:static\s+)?(?:final\s+)?([A-Z][\w<>, ?\[\]]+)\s+([a-zA-Z_][A-Za-z0-9_]*)\s*(?:=|;)/g;
+  for (const match of content.matchAll(fieldPattern)) {
+    const annotationBlock = match[1] ?? "";
+    const simpleTypeName = simplifyTypeName(match[2] ?? "");
+    const fieldName = match[3] ?? simpleTypeName;
+    const confidence = /@(Autowired|Inject|Resource)\b/.test(annotationBlock) ? "high" : "medium";
+    addMember(fieldName, simpleTypeName, confidence, "java-field-type", `${fieldName}:${simpleTypeName}`);
+  }
+
+  return Array.from(members.values());
+}
+
+function extractTypedDependencies(
+  content: string,
+  className: string,
+  packageName: string | undefined,
+  imports: string[],
+): Array<{ targetFqn: string; targetType: string; evidenceKind: string; evidenceValue: string; confidence: "medium" | "high" }> {
+  const dependencies = new Map<string, { targetFqn: string; targetType: string; evidenceKind: string; evidenceValue: string; confidence: "medium" | "high" }>();
+
+  const addDependency = (
+    simpleTypeName: string,
+    evidenceKind: string,
+    evidenceValue: string,
+    confidence: "medium" | "high",
+  ): void => {
+    const targetType = inferDependencyType(simpleTypeName);
+    if (targetType === "class") {
+      return;
+    }
+    const targetFqn = resolveTypeName(simpleTypeName, imports, packageName);
+    const key = `${targetType}:${targetFqn}`;
+    const existing = dependencies.get(key);
+    if (!existing || (existing.confidence === "medium" && confidence === "high")) {
+      dependencies.set(key, {
+        targetFqn,
+        targetType,
+        evidenceKind,
+        evidenceValue,
+        confidence,
+      });
+    }
+  };
+
+  for (const member of extractTypedMembers(content, packageName, imports)) {
+    addDependency(
+      member.targetFqn.split(".").pop() ?? member.targetFqn,
+      member.evidenceKind,
+      member.evidenceValue,
+      member.confidence,
+    );
+  }
+
+  const constructorPattern = new RegExp(`(?:public|protected|private)\\s+${className}\\s*\\(([^)]*)\\)`, "g");
+  for (const match of content.matchAll(constructorPattern)) {
+    const parameterTypes = extractParameterTypes(match[1] ?? "");
+    for (const parameterType of parameterTypes) {
+      addDependency(parameterType, "java-constructor-param", parameterType, "high");
+    }
+  }
+
+  const setterPattern = /(?:public|protected)\s+void\s+set[A-Z][A-Za-z0-9_]*\s*\(([^)]*)\)/g;
+  for (const match of content.matchAll(setterPattern)) {
+    const parameterTypes = extractParameterTypes(match[1] ?? "");
+    for (const parameterType of parameterTypes) {
+      addDependency(parameterType, "java-setter-param", parameterType, "medium");
+    }
+  }
+
+  const instantiationPattern = /new\s+([A-Z][A-Za-z0-9_]*)\s*\(/g;
+  for (const match of content.matchAll(instantiationPattern)) {
+    const simpleTypeName = match[1] ?? "";
+    addDependency(simpleTypeName, "java-instantiation", simpleTypeName, "medium");
+  }
+
+  return Array.from(dependencies.values());
+}
+
+function extractMappingValues(annotationText: string): string[] {
+  const values = new Set<string>();
+  const namedMatches = Array.from(annotationText.matchAll(/\b(?:value|path)\s*=\s*"([^"]+)"/g));
+  for (const match of namedMatches) {
+    if (match[1]) {
+      values.add(match[1]);
+    }
+  }
+
+  if (values.size === 0) {
+    const directMatch = annotationText.match(/^\s*"([^"]+)"/);
+    if (directMatch?.[1]) {
+      values.add(directMatch[1]);
+    }
+  }
+
+  return Array.from(values);
+}
+
+function normalizeViewName(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^redirect:/, "")
+    .replace(/^forward:/, "")
+    .replace(/^\/+/, "")
+    .replace(/\.jsp$/, "");
+}
+
+function normalizeMappingPath(path: string): string {
+  if (!path) {
+    return path;
+  }
+  return path.startsWith("/") ? path : `/${path}`;
+}
+
+function combineMappingPaths(basePath: string | undefined, childPath: string | undefined): string {
+  if (!basePath && !childPath) {
+    return "/";
+  }
+  if (!basePath) {
+    return normalizeMappingPath(childPath ?? "/");
+  }
+  if (!childPath) {
+    return normalizeMappingPath(basePath);
+  }
+  return `${normalizeMappingPath(basePath).replace(/\/$/, "")}/${normalizeMappingPath(childPath).replace(/^\//, "")}`;
+}
+
+function extractRequestMappings(content: string): string[] {
+  const classMatch = content.match(/((?:@\w+(?:\([^)]*\))?\s*)*)\bpublic\s+class\b/);
+  const classAnnotationBlock = classMatch?.[1] ?? "";
+  const classMappings = Array.from(classAnnotationBlock.matchAll(/@(?:RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*\(([^)]*)\)/g))
+    .flatMap((match) => extractMappingValues(match[1] ?? ""));
+
+  const methodMappings = Array.from(
+    content.matchAll(/@(?:RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*\(([^)]*)\)\s*(?:@[^\n]+\s*)*(?:public|protected|private)\s+(?!class\b)/g),
+  ).flatMap((match) => extractMappingValues(match[1] ?? ""));
+
+  const mappings = new Set<string>();
+  if (methodMappings.length > 0) {
+    for (const methodMapping of methodMappings) {
+      if (classMappings.length > 0) {
+        for (const classMapping of classMappings) {
+          mappings.add(combineMappingPaths(classMapping, methodMapping));
+        }
+      } else {
+        mappings.add(normalizeMappingPath(methodMapping));
+      }
+    }
+  }
+
+  if (mappings.size === 0) {
+    for (const classMapping of classMappings) {
+      mappings.add(normalizeMappingPath(classMapping));
+    }
+  }
+
+  return Array.from(mappings);
+}
+
+function collectViewNamesFromMethodBody(content: string): string[] {
+  const viewNames = new Set<string>();
+  const patterns = [
+    /return\s+"([^"]+)"/g,
+    /new\s+ModelAndView\s*\(\s*"([^"]+)"/g,
+    /\.setViewName\s*\(\s*"([^"]+)"/g,
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of content.matchAll(pattern)) {
+      const value = normalizeViewName(match[1] ?? "");
+      if (!value || value === "ERROR" || value === "OK" || /^[0-9]+$/.test(value)) {
+        continue;
+      }
+      viewNames.add(value);
+    }
+  }
+
+  return Array.from(viewNames);
+}
+
+function findMatchingBrace(content: string, openBraceIndex: number): number {
+  let depth = 0;
+  for (let index = openBraceIndex; index < content.length; index += 1) {
+    const char = content[index];
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return content.length - 1;
+}
+
+function extractRequestHandlers(content: string): Array<{
+  methodName: string;
+  requestMappings: string[];
+  viewNames: string[];
+  responseBody: boolean;
+  serviceCalls: Array<{ targetType: string; targetName: string; methodName: string }>;
+}> {
+  const classMatch = content.match(/((?:@\w+(?:\([^)]*\))?\s*)*)\bpublic\s+class\b/);
+  const classAnnotationBlock = classMatch?.[1] ?? "";
+  const classMappings = Array.from(classAnnotationBlock.matchAll(/@(?:RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*\(([^)]*)\)/g))
+    .flatMap((match) => extractMappingValues(match[1] ?? ""));
+  const handlers: Array<{
+    methodName: string;
+    requestMappings: string[];
+    viewNames: string[];
+    responseBody: boolean;
+    serviceCalls: Array<{ targetType: string; targetName: string; methodName: string }>;
+  }> = [];
+  const typedMembers = extractTypedMembers(content, extractPackageName(content), extractImports(content));
+  const memberIndex = new Map(typedMembers.map((member) => [member.memberName, member]));
+  const signaturePattern = /((?:@\w+(?:\([^)]*\))?\s*)*)(public|protected|private)\s+[\w<>\[\], ?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:throws\s+[^{]+)?\{/g;
+  let match: RegExpExecArray | null;
+  while ((match = signaturePattern.exec(content)) !== null) {
+    const annotationBlock = match[1] ?? "";
+    const methodName = match[3] ?? "";
+    const mappingMatches = Array.from(annotationBlock.matchAll(/@(?:RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*\(([^)]*)\)/g));
+    const openBraceIndex = content.indexOf("{", match.index + match[0].length - 1);
+    const closeBraceIndex = findMatchingBrace(content, openBraceIndex);
+    const methodBody = content.slice(openBraceIndex + 1, closeBraceIndex);
+    const viewNames = collectViewNamesFromMethodBody(methodBody);
+    const responseBody = /@ResponseBody\b/.test(annotationBlock);
+    const serviceCalls = Array.from(methodBody.matchAll(/\b(?:this\.)?([a-zA-Z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/g))
+      .map((callMatch) => {
+        const memberName = callMatch[1] ?? "";
+        const callMethodName = callMatch[2] ?? "";
+        const member = memberIndex.get(memberName);
+        if (!member || (member.targetType !== "service" && member.targetType !== "dao")) {
+          return undefined;
+        }
+        return {
+          targetType: member.targetType,
+          targetName: member.targetFqn,
+          methodName: callMethodName,
+        };
+      })
+      .filter((value): value is { targetType: string; targetName: string; methodName: string } => Boolean(value));
+    if (mappingMatches.length === 0 && viewNames.length === 0 && !responseBody && serviceCalls.length === 0) {
+      signaturePattern.lastIndex = closeBraceIndex + 1;
+      continue;
+    }
+    const methodMappings = mappingMatches.flatMap((mappingMatch) => extractMappingValues(mappingMatch[1] ?? ""));
+    const requestMappings = methodMappings.length > 0
+      ? (classMappings.length > 0
+          ? methodMappings.flatMap((methodMapping) => classMappings.map((classMapping) => combineMappingPaths(classMapping, methodMapping)))
+          : methodMappings.map((methodMapping) => normalizeMappingPath(methodMapping)))
+      : [];
+    handlers.push({
+      methodName,
+      requestMappings: Array.from(new Set(requestMappings)),
+      viewNames,
+      responseBody,
+      serviceCalls: serviceCalls.filter((call, index, array) =>
+        array.findIndex((candidate) =>
+          candidate.targetType === call.targetType &&
+          candidate.targetName === call.targetName &&
+          candidate.methodName === call.methodName,
+        ) === index,
+      ),
+    });
+    signaturePattern.lastIndex = closeBraceIndex + 1;
+  }
+  return handlers;
+}
+
+export class JavaSourceBasicAdapter implements AnalyzerAdapter {
+  readonly id = "java-source-basic";
+  readonly name = "Java source basic Adapter";
+  readonly version = "0.1.0";
+  readonly capabilities = {
+    supportedFilePatterns: ["**/*.java"],
+    technologyTags: ["java"],
+    produces: ["class", "controller", "service", "dao"],
+  };
+
+  canRun(context: AdapterContext): boolean {
+    return context.fileIndex.files.some((file) => file.endsWith(".java"));
+  }
+
+  async collectInputs(context: AdapterContext): Promise<AdapterInputSet> {
+    return {
+      files: context.fileIndex.files.filter((file) => file.endsWith(".java")),
+    };
+  }
+
+  async run(context: AdapterContext, inputs: AdapterInputSet): Promise<AdapterResult> {
+    const nodes: GraphNode[] = [];
+    const edges: GraphEdge[] = [];
+    const artifacts: ArtifactRecord[] = [];
+    const warnings: AdapterWarning[] = [];
+
+    for (const file of inputs.files) {
+      const content = await readFile(join(context.projectRoot, file), "utf8");
+      try {
+        parse(content);
+      } catch (error) {
+        warnings.push({
+          code: "JAVA_PARSE_FAILED",
+          message: "Java source could not be parsed; falling back to lightweight extraction",
+          severity: "warning" as const,
+          filePath: file,
+          recoverable: true,
+          details: { error: error instanceof Error ? error.message : String(error) },
+        });
+      }
+
+      const className = extractClassName(content);
+      if (!className) {
+        continue;
+      }
+      const packageName = extractPackageName(content);
+      const role = inferJavaRole(content, className);
+      const fqn = packageName ? `${packageName}.${className}` : className;
+      const imports = extractImports(content);
+      const requestMappings = role === "controller" ? extractRequestMappings(content) : [];
+      const requestHandlers = role === "controller" ? extractRequestHandlers(content) : [];
+      const classNode = {
+        id: nodeId(context.projectId, role, fqn),
+        type: role,
+        name: fqn,
+        displayName: className,
+        projectId: context.projectId,
+        path: file,
+        language: "java",
+        profileHints: [context.profileId],
+        sourceAdapterIds: [this.id],
+        confidence: "medium" as const,
+        evidence: [{ kind: "java-class", value: fqn }],
+        metadata: { packageName, requestMappings, requestHandlers },
+      };
+      nodes.push(classNode);
+
+      for (const imported of imports) {
+        const targetType =
+          (imported.endsWith("Controller") || imported.endsWith("Action")) ? "controller" :
+          imported.endsWith("Service") ? "service" :
+          (imported.endsWith("Dao") || imported.endsWith("DAO")) ? "dao" :
+          "class";
+        const targetNodeId = nodeId(context.projectId, targetType, imported);
+        edges.push({
+          id: edgeId(context.projectId, "depends_on", classNode.id, targetNodeId),
+          type: "depends_on",
+          from: classNode.id,
+          to: targetNodeId,
+          projectId: context.projectId,
+          sourceAdapterIds: [this.id],
+          confidence: "low" as const,
+          directional: true,
+          evidence: [{ kind: "java-import", value: imported }],
+        });
+      }
+
+      for (const dependency of extractTypedDependencies(content, className, packageName, imports)) {
+        const targetNodeId = nodeId(context.projectId, dependency.targetType, dependency.targetFqn);
+        edges.push({
+          id: edgeId(context.projectId, "depends_on", classNode.id, targetNodeId),
+          type: "depends_on",
+          from: classNode.id,
+          to: targetNodeId,
+          projectId: context.projectId,
+          sourceAdapterIds: [this.id],
+          confidence: dependency.confidence,
+          directional: true,
+          evidence: [{ kind: dependency.evidenceKind, value: dependency.evidenceValue }],
+        });
+      }
+
+      artifacts.push({
+        id: nodeId(context.projectId, "artifact", `java:${file}`),
+        type: "java-source-summary",
+        projectId: context.projectId,
+        producerAdapterId: this.id,
+        payload: { file, className, packageName, role },
+      });
+    }
+
+    return {
+      adapterId: this.id,
+      status: "success",
+      nodes,
+      edges,
+      entryPoints: [],
+      artifacts,
+      warnings,
+    };
+  }
+}

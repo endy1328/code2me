@@ -1,0 +1,5 @@
+<decorators>
+  <decorator name="mainLayout" page="WEB-INF/decorators/main.jsp">
+    <pattern>/sample/*</pattern>
+  </decorator>
+</decorators>
