@@ -2650,21 +2650,15 @@ function collectModuleProfileCards(
     .slice(0, 8);
 }
 
-export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string {
+export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData?: FlowReportData): string {
   const title = `code2me report - ${snapshot.projectId}`;
-  const dataFlowCards = collectDataFlowCards(snapshot);
-  const screenCards = enrichScreenCardsWithDataFlow(collectScreenCards(snapshot), dataFlowCards);
-  const { screenFlowCards, apiFlowCards, flowDetails } = buildRequestFlowCards(snapshot, screenCards, dataFlowCards);
-  const { frameworkFlowCards, frameworkDetails } = collectFrameworkFlowCards(snapshot, screenFlowCards, apiFlowCards);
-  const enrichedFlowDetails = enrichFlowDetailsWithBrowserEntry(
-    snapshot,
-    enrichFlowDetailsWithUiActions(
-      snapshot,
-      [...frameworkDetails, ...flowDetails],
-      [...screenFlowCards, ...apiFlowCards],
-    ),
-    [...screenFlowCards, ...apiFlowCards],
-  );
+  const resolvedFlowData = flowData ?? buildFlowReportData(snapshot);
+  const dataFlowCards = resolvedFlowData.dataFlowCards;
+  const screenCards = resolvedFlowData.screenCards;
+  const screenFlowCards = resolvedFlowData.screenFlowCards;
+  const apiFlowCards = resolvedFlowData.apiFlowCards;
+  const frameworkFlowCards = resolvedFlowData.frameworkFlowCards;
+  const enrichedFlowDetails = resolvedFlowData.interactiveFlowDetails;
   const largeSnapshotMode = snapshot.nodes.length + snapshot.edges.length + snapshot.artifacts.length > 6000;
   const uiSnapshot = buildUiSnapshot(snapshot, {
     compact: largeSnapshotMode,
@@ -3463,11 +3457,14 @@ export function renderEvidenceHtmlReport(snapshot: AnalysisSnapshot): string {
 }
 
 interface FlowReportData {
+  screenCards: ScreenCard[];
   dataFlowCards: DataFlowCard[];
   screenFlowCards: RequestFlowCard[];
   apiFlowCards: RequestFlowCard[];
   flowDetails: FlowDetailCard[];
+  interactiveFlowDetails: FlowDetailCard[];
   frameworkFlowCards: FrameworkFlowCard[];
+  frameworkDetails: FlowDetailCard[];
   libraryAnchorCards: ReturnType<typeof collectLibraryAnchorCards>;
 }
 
@@ -3475,7 +3472,7 @@ function buildFlowReportData(snapshot: AnalysisSnapshot): FlowReportData {
   const dataFlowCards = collectDataFlowCards(snapshot);
   const screenCards = enrichScreenCardsWithDataFlow(collectScreenCards(snapshot), dataFlowCards);
   const { screenFlowCards, apiFlowCards, flowDetails } = buildRequestFlowCards(snapshot, screenCards, dataFlowCards);
-  const { frameworkFlowCards } = collectFrameworkFlowCards(snapshot, screenFlowCards, apiFlowCards);
+  const { frameworkFlowCards, frameworkDetails } = collectFrameworkFlowCards(snapshot, screenFlowCards, apiFlowCards);
   const enrichedFlowDetails = enrichFlowDetailsWithBrowserEntry(
     snapshot,
     enrichFlowDetailsWithUiActions(
@@ -3485,14 +3482,30 @@ function buildFlowReportData(snapshot: AnalysisSnapshot): FlowReportData {
     ),
     [...screenFlowCards, ...apiFlowCards],
   );
+  const interactiveFlowDetails = enrichFlowDetailsWithBrowserEntry(
+    snapshot,
+    enrichFlowDetailsWithUiActions(
+      snapshot,
+      [...frameworkDetails, ...flowDetails],
+      [...screenFlowCards, ...apiFlowCards],
+    ),
+    [...screenFlowCards, ...apiFlowCards],
+  );
   return {
+    screenCards,
     dataFlowCards,
     screenFlowCards,
     apiFlowCards,
     flowDetails: enrichedFlowDetails,
+    interactiveFlowDetails,
     frameworkFlowCards,
+    frameworkDetails,
     libraryAnchorCards: collectLibraryAnchorCards(snapshot),
   };
+}
+
+export function prepareFlowReportData(snapshot: AnalysisSnapshot): FlowReportData {
+  return buildFlowReportData(snapshot);
 }
 
 export function renderScreenFlowsHtmlReport(snapshot: AnalysisSnapshot, flowData?: FlowReportData): string {
@@ -3640,17 +3653,17 @@ export function renderRawHtmlReport(snapshot: AnalysisSnapshot): string {
   });
 }
 
-export function renderSplitFlowHtmlReports(snapshot: AnalysisSnapshot): {
+export function renderSplitFlowHtmlReports(snapshot: AnalysisSnapshot, flowData?: FlowReportData): {
   screenFlows: string;
   apiFlows: string;
   flowDetails: string;
   architecture: string;
 } {
-  const flowData = buildFlowReportData(snapshot);
+  const resolvedFlowData = flowData ?? buildFlowReportData(snapshot);
   return {
-    screenFlows: renderScreenFlowsHtmlReport(snapshot, flowData),
-    apiFlows: renderApiFlowsHtmlReport(snapshot, flowData),
-    flowDetails: renderFlowDetailsHtmlReport(snapshot, flowData),
-    architecture: renderArchitectureContextHtmlReport(snapshot, flowData),
+    screenFlows: renderScreenFlowsHtmlReport(snapshot, resolvedFlowData),
+    apiFlows: renderApiFlowsHtmlReport(snapshot, resolvedFlowData),
+    flowDetails: renderFlowDetailsHtmlReport(snapshot, resolvedFlowData),
+    architecture: renderArchitectureContextHtmlReport(snapshot, resolvedFlowData),
   };
 }

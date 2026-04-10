@@ -3,6 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AnalysisSnapshot } from "./model.js";
 import {
+  prepareFlowReportData,
   renderEvidenceHtmlReport,
   renderExploreHtmlReport,
   renderInteractiveHtmlReport,
@@ -128,11 +129,12 @@ export async function writeSnapshot(projectRoot: string, projectId: string, snap
   const outputPaths = getOutputPaths(projectRoot, projectId);
   const payload = JSON.stringify(snapshot, null, 2);
   const summary = renderMarkdownSummary(snapshot);
-  const report = renderInteractiveHtmlReport(snapshot);
+  const flowData = prepareFlowReportData(snapshot);
+  const report = renderInteractiveHtmlReport(snapshot, flowData);
   const explore = renderExploreHtmlReport(snapshot);
   const evidence = renderEvidenceHtmlReport(snapshot);
   const raw = renderRawHtmlReport(snapshot);
-  const splitPages = renderSplitFlowHtmlReports(snapshot);
+  const splitPages = renderSplitFlowHtmlReports(snapshot, flowData);
   const historyRecord = JSON.stringify({
     createdAt: snapshot.createdAt,
     profileId: snapshot.profileId,
