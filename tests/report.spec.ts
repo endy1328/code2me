@@ -15,6 +15,9 @@ interface ReportSection {
 interface ReportFlowDetail {
   type?: string;
   title?: string;
+  summary?: string;
+  responseKind?: string;
+  responseTags?: string[];
   sections?: ReportSection[];
 }
 
@@ -26,6 +29,7 @@ function extractReportData(html: string): {
   screenCards: Array<Record<string, unknown>>;
   primaryFlowCards: Array<Record<string, unknown>>;
   dataFlowCards: Array<Record<string, unknown>>;
+  moduleProfileCards: Array<Record<string, unknown>>;
 } {
   const match = html.match(/const report = (\{[\s\S]*\});\n    const translations = /);
   if (!match) {
@@ -39,6 +43,7 @@ function extractReportData(html: string): {
     screenCards: Array<Record<string, unknown>>;
     primaryFlowCards: Array<Record<string, unknown>>;
     dataFlowCards: Array<Record<string, unknown>>;
+    moduleProfileCards: Array<Record<string, unknown>>;
   };
 }
 
@@ -82,7 +87,7 @@ describe("interactive report entry flow synthesis", () => {
     expect(html).toContain('titleWithCount(t("frameworkFlow"), filtered.length)');
     expect(html).toContain('titleWithCount(t("screenFlow"), filtered.length)');
     expect(html).toContain('titleWithCount(t("apiFlow"), filtered.length)');
-    expect(html).toContain('titleWithCount(t("relatedData"), filteredData.length)');
+    expect(html).toContain('titleWithCount(t("relatedData"), selectedData.length)');
     expect(html).toContain('titleWithCount(t("sharedModules"), filteredLibraries.length)');
     expect(html).toContain('sectionHtml(t("runtimeContext"), structureSummary, false)');
   });
@@ -143,8 +148,194 @@ describe("interactive report entry flow synthesis", () => {
 
     expect(html).toContain('pill(t("possibleBackendPath"))');
     expect(html).toContain('t("dataFlowMeaning")');
+    expect(html).toContain('data-toggle-hidden-data-paths="true"');
+    expect(html).toContain('t("inferenceLevelLabel")');
     expect(html).toContain('t("showAllRequests") + " (" + card.routeValues.length + ")"');
     expect(html).toContain('t("evidenceBasis") + ": " + (card.evidenceLabel || t("notConfirmed"))');
+  });
+
+  it("marks weak inferred paths hidden by default and keeps direct sql-backed paths visible", () => {
+    const reportWeak = extractReportData(renderInteractiveHtmlReport({
+      projectId: "weak-data-path-project",
+      profileId: "legacy-java-ee",
+      createdAt: "2026-04-09T00:00:00.000Z",
+      nodes: [
+        createNode({
+          id: "controller-1",
+          type: "controller",
+          name: "com.example.SampleController",
+          displayName: "sampleController",
+          projectId: "weak-data-path-project",
+          path: "app/src/SampleController.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "medium",
+          evidence: [],
+          metadata: {
+            requestMappings: ["/sample/list.as"],
+          },
+        }),
+        createNode({
+          id: "service-1",
+          type: "service",
+          name: "com.example.SampleService",
+          displayName: "SampleService",
+          projectId: "weak-data-path-project",
+          path: "app/src/SampleService.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "medium",
+          evidence: [],
+        }),
+      ],
+      edges: [
+        createEdge({
+          id: "depends-1",
+          type: "depends_on",
+          from: "controller-1",
+          to: "service-1",
+          projectId: "weak-data-path-project",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "medium",
+          directional: true,
+          evidence: [],
+        }),
+      ],
+      entryPoints: [],
+      warnings: [],
+      artifacts: [],
+    }));
+
+    const weakCard = reportWeak.dataFlowCards[0] as {
+      inferenceLevel?: string;
+      hiddenByDefault?: boolean;
+      evidenceKinds?: string[];
+    };
+    expect(weakCard.inferenceLevel).toBe("inferred");
+    expect(weakCard.hiddenByDefault).toBe(true);
+    expect(weakCard.evidenceKinds).toContain("controller-service-edge");
+
+    const reportStrong = extractReportData(renderInteractiveHtmlReport({
+      projectId: "strong-data-path-project",
+      profileId: "legacy-java-ee",
+      createdAt: "2026-04-09T00:00:00.000Z",
+      nodes: [
+        createNode({
+          id: "controller-1",
+          type: "controller",
+          name: "com.example.CategoryController",
+          displayName: "categoryController",
+          projectId: "strong-data-path-project",
+          path: "app/src/CategoryController.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "medium",
+          evidence: [],
+          metadata: {
+            requestMappings: ["/category/list.as"],
+          },
+        }),
+        createNode({
+          id: "service-1",
+          type: "service",
+          name: "com.example.CategoryService",
+          displayName: "CategoryService",
+          projectId: "strong-data-path-project",
+          path: "app/src/CategoryService.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "medium",
+          evidence: [],
+        }),
+        createNode({
+          id: "dao-1",
+          type: "dao",
+          name: "com.example.CategoryDao",
+          displayName: "CategoryDao",
+          projectId: "strong-data-path-project",
+          path: "app/src/CategoryDao.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            methodSummaries: [
+              {
+                methodName: "getCategoryList",
+                dependencyCalls: [],
+                sqlCalls: [{ statementId: "category.getCategoryList", operation: "queryForList" }],
+                externalCalls: [],
+              },
+            ],
+          },
+        }),
+        createNode({
+          id: "mapper-1",
+          type: "mapper",
+          name: "category",
+          displayName: "category",
+          projectId: "strong-data-path-project",
+          path: "app/src/categoryDao.xml",
+          sourceAdapterIds: ["ibatis-sql-map"],
+          confidence: "high",
+          evidence: [],
+        }),
+        createNode({
+          id: "sql-1",
+          type: "sql_statement",
+          name: "category.getCategoryList",
+          displayName: "getCategoryList",
+          projectId: "strong-data-path-project",
+          path: "app/src/categoryDao.xml",
+          sourceAdapterIds: ["ibatis-sql-map"],
+          confidence: "high",
+          evidence: [],
+        }),
+      ],
+      edges: [
+        createEdge({
+          id: "depends-service-dao",
+          type: "depends_on",
+          from: "service-1",
+          to: "dao-1",
+          projectId: "strong-data-path-project",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "medium",
+          directional: true,
+          evidence: [],
+        }),
+        createEdge({
+          id: "queries-1",
+          type: "queries",
+          from: "dao-1",
+          to: "mapper-1",
+          projectId: "strong-data-path-project",
+          sourceAdapterIds: ["ibatis-sql-map"],
+          confidence: "high",
+          directional: true,
+          evidence: [],
+        }),
+        createEdge({
+          id: "contains-1",
+          type: "contains",
+          from: "mapper-1",
+          to: "sql-1",
+          projectId: "strong-data-path-project",
+          sourceAdapterIds: ["ibatis-sql-map"],
+          confidence: "high",
+          directional: true,
+          evidence: [],
+        }),
+      ],
+      entryPoints: [],
+      warnings: [],
+      artifacts: [],
+    }));
+
+    const strongCard = reportStrong.dataFlowCards[0] as {
+      inferenceLevel?: string;
+      hiddenByDefault?: boolean;
+      evidenceKinds?: string[];
+    };
+    expect(strongCard.inferenceLevel).toBe("confirmed");
+    expect(strongCard.hiddenByDefault).toBe(false);
+    expect(strongCard.evidenceKinds).toContain("dao-mapper-edge");
+    expect(strongCard.evidenceKinds).toContain("sql-call");
   });
 
   it("renders a selected flow context bar and highlights the chosen flow card", () => {
@@ -614,7 +805,7 @@ describe("interactive report entry flow synthesis", () => {
     const businessSection = detail?.sections?.find((section) => section.key === "detailBusinessSteps");
     const outputSection = detail?.sections?.find((section) => section.key === "detailOutput");
 
-    expect(businessSection?.lines).toContain("business path: SampleController -> SampleService -> SampleDao");
+    expect(businessSection?.lines).toContain("business path: SampleController -> SampleService -> - -> SampleDao");
     expect(outputSection?.lines).toContain("logical view: sample/list");
     expect(outputSection?.lines).toContain("view resolver: jspViewResolver: /WEB-INF/views/*.jsp");
     expect(outputSection?.lines).toContain("resolved jsp candidates: /WEB-INF/views/sample/list.jsp");
@@ -909,8 +1100,871 @@ describe("interactive report entry flow synthesis", () => {
     const businessSection = detail?.sections?.find((section) => section.key === "detailBusinessSteps");
 
     expect(detail?.summary).toBe("/contentcategory/list.as -> contentCategoryAction -> CategoryService -> - -> contentCategory/contentCategoryList.jsp");
-    expect(businessSection?.lines).toContain("business path: contentCategoryAction -> CategoryService -> -");
+    expect(businessSection?.lines).toContain("business path: contentCategoryAction -> CategoryService -> - -> -");
     expect(detail?.summary).not.toContain("ShopCategoryService");
+  });
+
+  it("traces dao through a service to biz to dao chain", () => {
+    const projectId = "biz-chain-project";
+    const snapshot: AnalysisSnapshot = {
+      projectId,
+      profileId: "legacy-java-ee",
+      createdAt: "2026-04-09T00:00:00.000Z",
+      nodes: [
+        createNode({
+          id: "route-1",
+          type: "route",
+          name: "dispatcher",
+          displayName: "dispatcher",
+          projectId,
+          path: "app/WEB-INF/web.xml",
+          sourceAdapterIds: ["web-xml"],
+          confidence: "high",
+          evidence: [],
+        }),
+        createNode({
+          id: "controller-1",
+          type: "controller",
+          name: "com.example.CategoryAction",
+          displayName: "categoryAction",
+          projectId,
+          path: "app/src/com/example/CategoryAction.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            requestMappings: ["/contentcategory/list.as"],
+            requestHandlers: [
+              {
+                methodName: "getContentCategoryList",
+                requestMappings: ["/contentcategory/list.as"],
+                viewNames: ["contentCategory/contentCategoryList"],
+                responseBody: false,
+                produces: [],
+                contentTypes: [],
+                redirectTargets: [],
+                fileResponseHints: [],
+                serviceCalls: [
+                  { targetType: "service", targetName: "com.example.CategoryService", methodName: "getCategoryContentList" },
+                ],
+              },
+            ],
+          },
+        }),
+        createNode({
+          id: "service-1",
+          type: "service",
+          name: "com.example.CategoryService",
+          displayName: "CategoryService",
+          projectId,
+          path: "lib/src/com/example/CategoryService.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            methodSummaries: [
+              {
+                methodName: "getCategoryContentList",
+                dependencyCalls: [
+                  { targetType: "biz", targetName: "com.example.CategoryBiz", methodName: "getCategoryContentList" },
+                ],
+                sqlCalls: [],
+              },
+            ],
+          },
+        }),
+        createNode({
+          id: "biz-1",
+          type: "biz",
+          name: "com.example.CategoryBiz",
+          displayName: "CategoryBiz",
+          projectId,
+          path: "lib/src/com/example/CategoryBiz.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            methodSummaries: [
+              {
+                methodName: "getCategoryContentList",
+                dependencyCalls: [
+                  { targetType: "dao", targetName: "com.example.CategoryDAO", methodName: "getCategoryContentList" },
+                ],
+                sqlCalls: [],
+              },
+            ],
+          },
+        }),
+        createNode({
+          id: "dao-1",
+          type: "dao",
+          name: "com.example.CategoryDAO",
+          displayName: "CategoryDAO",
+          projectId,
+          path: "lib/src/com/example/CategoryDAO.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+        }),
+        createNode({
+          id: "view-1",
+          type: "view",
+          name: "contentCategory/contentCategoryList",
+          displayName: "contentCategory/contentCategoryList",
+          projectId,
+          path: "app/WEB-INF/jsp/contentCategory/contentCategoryList.jsp",
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          evidence: [],
+        }),
+      ],
+      edges: [
+        createEdge({
+          id: "render-1",
+          type: "renders",
+          from: "controller-1",
+          to: "view-1",
+          projectId,
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          directional: true,
+          evidence: [],
+          metadata: { handlerMethods: ["getContentCategoryList"] },
+        }),
+        createEdge({
+          id: "depends-1",
+          type: "depends_on",
+          from: "controller-1",
+          to: "service-1",
+          projectId,
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          directional: true,
+          evidence: [],
+        }),
+        createEdge({
+          id: "depends-2",
+          type: "depends_on",
+          from: "service-1",
+          to: "biz-1",
+          projectId,
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          directional: true,
+          evidence: [{ kind: "java-field-type", value: "categoryBiz:CategoryBiz" }],
+        }),
+        createEdge({
+          id: "depends-3",
+          type: "depends_on",
+          from: "biz-1",
+          to: "dao-1",
+          projectId,
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          directional: true,
+          evidence: [{ kind: "java-field-type", value: "categoryDAO:CategoryDAO" }],
+        }),
+      ],
+      entryPoints: [
+        createEntryPoint({
+          id: "entry-1",
+          type: "web_entry",
+          targetEntityId: "route-1",
+          projectId,
+          title: "dispatcher",
+          reason: "Mapped by web.xml",
+          priority: 100,
+          sourceAdapterIds: ["web-xml"],
+          confidence: "high",
+          metadata: {
+            urlPattern: "*.as",
+            contextConfigLocation: "WEB-INF/dispatcher-servlet.xml",
+          },
+        }),
+      ],
+      warnings: [],
+      artifacts: [],
+    };
+
+    const report = extractReportData(renderInteractiveHtmlReport(snapshot));
+    const flow = report.screenFlowCards.find((item) => item.route === "/contentcategory/list.as") as Record<string, unknown> | undefined;
+    const detail = report.flowDetails.find((item) => item.title?.includes("/contentcategory/list.as"));
+    const businessSection = detail?.sections?.find((section) => section.key === "detailBusinessSteps");
+
+    expect(flow?.biz).toBe("CategoryBiz");
+    expect(flow?.dao).toBe("CategoryDAO");
+    expect(businessSection?.lines).toContain("biz: CategoryBiz");
+    expect(businessSection?.lines).toContain("dao: CategoryDAO");
+    expect(businessSection?.lines).toContain("service -> biz evidence: CategoryService.getCategoryContentList() -> CategoryBiz.getCategoryContentList()");
+    expect(businessSection?.lines).toContain("biz -> dao evidence: CategoryBiz.getCategoryContentList() -> CategoryDAO.getCategoryContentList()");
+  });
+
+  it("adds non-screen response tags for download, ajax, and external-facing candidates", () => {
+    const projectId = "non-screen-tags-project";
+    const snapshot: AnalysisSnapshot = {
+      projectId,
+      profileId: "legacy-java-ee",
+      createdAt: "2026-04-09T00:00:00.000Z",
+      nodes: [
+        createNode({
+          id: "route-1",
+          type: "route",
+          name: "dispatcher",
+          displayName: "dispatcher",
+          projectId,
+          path: "app/WEB-INF/web.xml",
+          sourceAdapterIds: ["web-xml"],
+          confidence: "high",
+          evidence: [],
+        }),
+        createNode({
+          id: "controller-1",
+          type: "controller",
+          name: "com.example.ApiController",
+          displayName: "apiController",
+          projectId,
+          path: "app/src/com/example/ApiController.java",
+          sourceAdapterIds: ["spring-xml", "java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            beanId: "apiController",
+            className: "com.example.ApiController",
+            handlerMappingPatterns: ["/galaxyapi/v2/report/*.json"],
+            methodNameResolverRef: "apiResolver",
+            requestMappings: ["/galaxyapi/v2/report/exportExcel.json"],
+            requestHandlers: [
+              {
+                methodName: "exportExcelAjax",
+                requestMappings: ["/galaxyapi/v2/report/exportExcel.json"],
+                viewNames: [],
+                responseBody: true,
+                serviceCalls: [
+                  {
+                    targetType: "service",
+                    targetName: "com.example.ReportService",
+                    methodName: "export",
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+        createNode({
+          id: "service-1",
+          type: "service",
+          name: "com.example.ReportService",
+          displayName: "ReportService",
+          projectId,
+          path: "app/src/com/example/ReportService.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "medium",
+          evidence: [],
+        }),
+      ],
+      edges: [
+        createEdge({
+          id: "depends-1",
+          type: "depends_on",
+          from: "controller-1",
+          to: "service-1",
+          projectId,
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "medium",
+          directional: true,
+          evidence: [],
+        }),
+      ],
+      entryPoints: [
+        createEntryPoint({
+          id: "entry-1",
+          type: "web_entry",
+          targetEntityId: "route-1",
+          projectId,
+          title: "dispatcher",
+          reason: "Mapped by web.xml",
+          priority: 100,
+          sourceAdapterIds: ["web-xml"],
+          confidence: "high",
+          metadata: {
+            urlPattern: "*.json",
+            contextConfigLocation: "WEB-INF/dispatcher-servlet.xml",
+          },
+        }),
+      ],
+      warnings: [],
+      artifacts: [],
+    };
+
+    const report = extractReportData(renderInteractiveHtmlReport(snapshot));
+    const apiFlow = report.apiFlowCards.find((item) => item.route === "/galaxyapi/v2/report/exportExcel.json");
+    const detail = report.flowDetails.find((item) => item.title?.includes("/galaxyapi/v2/report/exportExcel.json"));
+
+    expect(apiFlow?.responseKind).toBe("file");
+    expect(apiFlow?.responseTags).toEqual(["download", "ajax", "external-facing candidate"]);
+    expect(detail?.responseKind).toBe("file");
+    expect(detail?.responseTags).toEqual(["download", "ajax", "external-facing candidate"]);
+  });
+
+  it("shows external integration when a dao method calls an HTTP endpoint instead of SQL", () => {
+    const projectId = "external-dao-project";
+    const snapshot: AnalysisSnapshot = {
+      projectId,
+      profileId: "legacy-java-ee",
+      createdAt: "2026-04-09T00:00:00.000Z",
+      nodes: [
+        createNode({
+          id: "route-1",
+          type: "route",
+          name: "dispatcher",
+          displayName: "dispatcher",
+          projectId,
+          path: "app/WEB-INF/web.xml",
+          sourceAdapterIds: ["web-xml"],
+          confidence: "high",
+          evidence: [],
+        }),
+        createNode({
+          id: "controller-1",
+          type: "controller",
+          name: "com.example.AccountingAction",
+          displayName: "accountingAction",
+          projectId,
+          path: "app/src/com/example/AccountingAction.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            requestMappings: ["/accounting/accountingList.as"],
+            requestHandlers: [
+              {
+                methodName: "accountingList",
+                requestMappings: ["/accounting/accountingList.as"],
+                viewNames: ["accounting/accountingList"],
+                responseBody: false,
+                produces: [],
+                contentTypes: [],
+                redirectTargets: [],
+                fileResponseHints: [],
+                serviceCalls: [
+                  { targetType: "service", targetName: "com.example.AccountingService", methodName: "getSalesSummaryNewList" },
+                ],
+              },
+            ],
+          },
+        }),
+        createNode({
+          id: "service-1",
+          type: "service",
+          name: "com.example.AccountingService",
+          displayName: "AccountingService",
+          projectId,
+          path: "lib/src/com/example/AccountingService.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            methodSummaries: [
+              {
+                methodName: "getSalesSummaryNewList",
+                dependencyCalls: [
+                  { targetType: "biz", targetName: "com.example.AccountingBiz", methodName: "getSalesSummaryNewList" },
+                ],
+                sqlCalls: [],
+                externalCalls: [],
+              },
+            ],
+          },
+        }),
+        createNode({
+          id: "biz-1",
+          type: "biz",
+          name: "com.example.AccountingBiz",
+          displayName: "accountingBiz",
+          projectId,
+          path: "lib/src/com/example/AccountingBiz.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            methodSummaries: [
+              {
+                methodName: "getSalesSummaryNewList",
+                dependencyCalls: [
+                  { targetType: "dao", targetName: "com.example.AccountingADQDAO", methodName: "getSalesSummaryNewList" },
+                ],
+                sqlCalls: [],
+                externalCalls: [],
+              },
+            ],
+          },
+        }),
+        createNode({
+          id: "dao-1",
+          type: "dao",
+          name: "com.example.AccountingADQDAO",
+          displayName: "accountingADQDAO",
+          projectId,
+          path: "lib/src/com/example/AccountingADQDAO.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            methodSummaries: [
+              {
+                methodName: "getSalesSummaryNewList",
+                dependencyCalls: [],
+                sqlCalls: [],
+                externalCalls: [
+                  { kind: "http", target: "HttpURLConnection" },
+                  { kind: "external-api", target: "AStoreConfig.getAccountingSystemURL()" },
+                ],
+              },
+            ],
+          },
+        }),
+        createNode({
+          id: "view-1",
+          type: "view",
+          name: "accounting/accountingList",
+          displayName: "accounting/accountingList",
+          projectId,
+          path: "app/WEB-INF/jsp/accounting/accountingList.jsp",
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          evidence: [],
+        }),
+      ],
+      edges: [
+        createEdge({
+          id: "render-1",
+          type: "renders",
+          from: "controller-1",
+          to: "view-1",
+          projectId,
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          directional: true,
+          evidence: [],
+          metadata: { handlerMethods: ["accountingList"] },
+        }),
+        createEdge({
+          id: "depends-1",
+          type: "depends_on",
+          from: "controller-1",
+          to: "service-1",
+          projectId,
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          directional: true,
+          evidence: [],
+        }),
+        createEdge({
+          id: "depends-2",
+          type: "depends_on",
+          from: "service-1",
+          to: "biz-1",
+          projectId,
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          directional: true,
+          evidence: [],
+        }),
+        createEdge({
+          id: "depends-3",
+          type: "depends_on",
+          from: "biz-1",
+          to: "dao-1",
+          projectId,
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          directional: true,
+          evidence: [],
+        }),
+      ],
+      entryPoints: [
+        createEntryPoint({
+          id: "entry-1",
+          type: "web_entry",
+          targetEntityId: "route-1",
+          projectId,
+          title: "dispatcher",
+          reason: "Mapped by web.xml",
+          priority: 100,
+          sourceAdapterIds: ["web-xml"],
+          confidence: "high",
+          metadata: {
+            urlPattern: "*.as",
+            contextConfigLocation: "WEB-INF/dispatcher-servlet.xml",
+          },
+        }),
+      ],
+      warnings: [],
+      artifacts: [],
+    };
+
+    const report = extractReportData(renderInteractiveHtmlReport(snapshot));
+    const flow = report.screenFlowCards.find((item) => item.route === "/accounting/accountingList.as") as Record<string, unknown> | undefined;
+    const detail = report.flowDetails.find((item) => item.title?.includes("/accounting/accountingList.as"));
+    const businessSection = detail?.sections?.find((section) => section.key === "detailBusinessSteps");
+    const dataSection = detail?.sections?.find((section) => section.key === "detailDataAccess");
+
+    expect(Array.isArray(flow?.integration)).toBe(true);
+    expect((flow?.integration as string[])).toContain("external-api: AStoreConfig.getAccountingSystemURL()");
+    expect(businessSection?.lines).toContain("integration: http: HttpURLConnection | external-api: AStoreConfig.getAccountingSystemURL()");
+    expect(dataSection?.lines?.[0]).toContain("integration=http: HttpURLConnection ; external-api: AStoreConfig.getAccountingSystemURL()");
+  });
+
+  it("classifies non-screen response kinds for json, redirect, and action handlers", () => {
+    const projectId = "non-screen-kind-project";
+    const snapshot: AnalysisSnapshot = {
+      projectId,
+      profileId: "legacy-java-ee",
+      createdAt: "2026-04-09T00:00:00.000Z",
+      nodes: [
+        createNode({
+          id: "route-1",
+          type: "route",
+          name: "dispatcher",
+          displayName: "dispatcher",
+          projectId,
+          path: "app/WEB-INF/web.xml",
+          sourceAdapterIds: ["web-xml"],
+          confidence: "high",
+          evidence: [],
+        }),
+        createNode({
+          id: "controller-1",
+          type: "controller",
+          name: "com.example.MixedController",
+          displayName: "mixedController",
+          projectId,
+          path: "app/src/com/example/MixedController.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            beanId: "mixedController",
+            className: "com.example.MixedController",
+            handlerMappingPatterns: ["/app/*.as", "/api/v1/*.json"],
+            requestMappings: ["/api/v1/status.json", "/app/redirect.as", "/app/doSomething.as"],
+            requestHandlers: [
+              {
+                methodName: "status",
+                requestMappings: ["/api/v1/status.json"],
+                viewNames: [],
+                responseBody: true,
+                produces: ["application/json"],
+                contentTypes: ["application/json"],
+                redirectTargets: [],
+                fileResponseHints: [],
+                serviceCalls: [],
+              },
+              {
+                methodName: "redirectToList",
+                requestMappings: ["/app/redirect.as"],
+                viewNames: ["list"],
+                responseBody: false,
+                produces: [],
+                contentTypes: [],
+                redirectTargets: ["list"],
+                fileResponseHints: [],
+                serviceCalls: [],
+              },
+              {
+                methodName: "doSomething",
+                requestMappings: ["/app/doSomething.as"],
+                viewNames: [],
+                responseBody: false,
+                produces: [],
+                contentTypes: [],
+                redirectTargets: [],
+                fileResponseHints: [],
+                serviceCalls: [],
+              },
+            ],
+          },
+        }),
+      ],
+      edges: [],
+      entryPoints: [
+        createEntryPoint({
+          id: "entry-1",
+          type: "web_entry",
+          targetEntityId: "route-1",
+          projectId,
+          title: "dispatcher",
+          reason: "Mapped by web.xml",
+          priority: 100,
+          sourceAdapterIds: ["web-xml"],
+          confidence: "high",
+          metadata: {
+            urlPattern: "*.as",
+            contextConfigLocation: "WEB-INF/dispatcher-servlet.xml",
+          },
+        }),
+      ],
+      warnings: [],
+      artifacts: [],
+    };
+
+    const report = extractReportData(renderInteractiveHtmlReport(snapshot));
+    const jsonFlow = report.apiFlowCards.find((item) => item.route === "/api/v1/status.json");
+    const redirectFlow = report.apiFlowCards.find((item) => item.route === "/app/redirect.as");
+    const actionFlow = report.apiFlowCards.find((item) => item.route === "/app/doSomething.as");
+
+    expect(jsonFlow?.responseKind).toBe("json");
+    expect(redirectFlow?.responseKind).toBe("redirect");
+    expect(actionFlow?.responseKind).toBe("action");
+  });
+
+  it("marks non-screen flows that are linked from JSP actions as internal-ui-linked", () => {
+    const projectId = "internal-ui-linked-project";
+    const snapshot: AnalysisSnapshot = {
+      projectId,
+      profileId: "legacy-java-ee",
+      createdAt: "2026-04-09T00:00:00.000Z",
+      nodes: [
+        createNode({
+          id: "route-1",
+          type: "route",
+          name: "dispatcher",
+          displayName: "dispatcher",
+          projectId,
+          path: "app/WEB-INF/web.xml",
+          sourceAdapterIds: ["web-xml"],
+          confidence: "high",
+          evidence: [],
+        }),
+        createNode({
+          id: "view-1",
+          type: "view",
+          name: "sample/list",
+          displayName: "sample/list",
+          projectId,
+          path: "app/WEB-INF/jsp/sample/list.jsp",
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            uiActions: [
+              { kind: "form", target: "/sample/exportExcel.as", label: "download" },
+            ],
+          },
+        }),
+        createNode({
+          id: "controller-screen",
+          type: "controller",
+          name: "com.example.SampleController",
+          displayName: "sampleController",
+          projectId,
+          path: "app/src/com/example/SampleController.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            requestMappings: ["/sample/list.as"],
+            requestHandlers: [
+              { methodName: "list", requestMappings: ["/sample/list.as"], viewNames: ["sample/list"], responseBody: false, produces: [], contentTypes: [], redirectTargets: [], fileResponseHints: [] },
+            ],
+          },
+        }),
+        createNode({
+          id: "controller-api",
+          type: "controller",
+          name: "com.example.ExportController",
+          displayName: "exportController",
+          projectId,
+          path: "app/src/com/example/ExportController.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            requestMappings: ["/sample/exportExcel.as"],
+            requestHandlers: [
+              { methodName: "export", requestMappings: ["/sample/exportExcel.as"], viewNames: [], responseBody: false, produces: [], contentTypes: [], redirectTargets: [], fileResponseHints: ["excel-workbook"] },
+            ],
+          },
+        }),
+      ],
+      edges: [
+        createEdge({
+          id: "render-1",
+          type: "renders",
+          from: "controller-screen",
+          to: "view-1",
+          projectId,
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          directional: true,
+          evidence: [],
+        }),
+      ],
+      entryPoints: [
+        createEntryPoint({
+          id: "entry-1",
+          type: "web_entry",
+          targetEntityId: "route-1",
+          projectId,
+          title: "dispatcher",
+          reason: "Mapped by web.xml",
+          priority: 100,
+          sourceAdapterIds: ["web-xml"],
+          confidence: "high",
+          metadata: {
+            urlPattern: "*.as",
+            contextConfigLocation: "WEB-INF/dispatcher-servlet.xml",
+          },
+        }),
+      ],
+      warnings: [],
+      artifacts: [],
+    };
+
+    const report = extractReportData(renderInteractiveHtmlReport(snapshot));
+    const apiFlow = report.apiFlowCards.find((item) => item.route === "/sample/exportExcel.as");
+
+    expect(apiFlow?.responseTags).toContain("internal-ui-linked");
+  });
+
+  it("builds module profiles for mvc-heavy, api-centric, and api-centric mixed modules", () => {
+    const projectId = "module-profile-project";
+    const snapshot: AnalysisSnapshot = {
+      projectId,
+      profileId: "legacy-java-ee",
+      createdAt: "2026-04-09T00:00:00.000Z",
+      nodes: [
+        createNode({
+          id: "controller-admin",
+          type: "controller",
+          name: "com.example.admin.AdminController",
+          displayName: "adminController",
+          projectId,
+          path: "apps/Admin/src/main/java/com/example/admin/AdminController.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            requestMappings: ["/admin/list.as"],
+            requestHandlers: [
+              { methodName: "list", requestMappings: ["/admin/list.as"], viewNames: ["admin/list"], responseBody: false },
+            ],
+          },
+        }),
+        createNode({
+          id: "view-admin",
+          type: "view",
+          name: "admin/list",
+          displayName: "admin/list",
+          projectId,
+          path: "apps/Admin/WebContent/WEB-INF/jsp/admin/list.jsp",
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          evidence: [],
+        }),
+        createNode({
+          id: "controller-car",
+          type: "controller",
+          name: "com.example.carrier.ApiController",
+          displayName: "carrierApi",
+          projectId,
+          path: "apps/Carrier/src/main/java/com/example/carrier/ApiController.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            requestMappings: ["/galaxyapi/v2/report/export.json"],
+            requestHandlers: [
+              { methodName: "export", requestMappings: ["/galaxyapi/v2/report/export.json"], viewNames: [], responseBody: true },
+            ],
+          },
+        }),
+        createNode({
+          id: "controller-car-web",
+          type: "controller",
+          name: "com.example.carrier.WebController",
+          displayName: "carrierWeb",
+          projectId,
+          path: "apps/Carrier/src/main/java/com/example/carrier/WebController.java",
+          sourceAdapterIds: ["java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            requestMappings: ["/carrier/home.as", "/galaxyapi/v2/status.json", "/galaxyapi/v2/comment/list.json"],
+            requestHandlers: [
+              { methodName: "home", requestMappings: ["/carrier/home.as"], viewNames: ["carrier/home"], responseBody: false },
+              { methodName: "status", requestMappings: ["/galaxyapi/v2/status.json"], viewNames: [], responseBody: true },
+              { methodName: "commentList", requestMappings: ["/galaxyapi/v2/comment/list.json"], viewNames: [], responseBody: true },
+            ],
+          },
+        }),
+        createNode({
+          id: "view-car",
+          type: "view",
+          name: "carrier/home",
+          displayName: "carrier/home",
+          projectId,
+          path: "apps/Carrier/WebContent/WEB-INF/jsp/carrier/home.jsp",
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          evidence: [],
+        }),
+        createNode({
+          id: "config-car-api",
+          type: "config",
+          name: "applicationContextApi.xml",
+          displayName: "applicationContextApi.xml",
+          projectId,
+          path: "apps/Carrier/WebContent/WEB-INF/spring/applicationContextApi.xml",
+          sourceAdapterIds: ["spring-context"],
+          confidence: "high",
+          evidence: [],
+        }),
+        createNode({
+          id: "config-car-auth",
+          type: "config",
+          name: "applicationContextAuth.xml",
+          displayName: "applicationContextAuth.xml",
+          projectId,
+          path: "apps/Carrier/WebContent/WEB-INF/spring/applicationContextAuth.xml",
+          sourceAdapterIds: ["spring-context"],
+          confidence: "high",
+          evidence: [],
+        }),
+      ],
+      edges: [
+        createEdge({
+          id: "render-admin",
+          type: "renders",
+          from: "controller-admin",
+          to: "view-admin",
+          projectId,
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          directional: true,
+          evidence: [],
+        }),
+        createEdge({
+          id: "render-car",
+          type: "renders",
+          from: "controller-car-web",
+          to: "view-car",
+          projectId,
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          directional: true,
+          evidence: [],
+        }),
+      ],
+      entryPoints: [],
+      warnings: [],
+      artifacts: [],
+    };
+
+    const report = extractReportData(renderInteractiveHtmlReport(snapshot));
+
+    expect(report.moduleProfileCards.some((card) => card.title === "Admin" && card.profileLabel === "MVC-heavy web app")).toBe(true);
+    expect(report.moduleProfileCards.some((card) => card.title === "Carrier" && card.profileLabel === "API-centric mixed app")).toBe(true);
   });
 
   it("shows dispatcher routing and view resolver context in framework details", () => {
@@ -1203,6 +2257,17 @@ describe("interactive report entry flow synthesis", () => {
         confidence: "high",
         evidence: [],
       }),
+      createNode({
+        id: "view-1",
+        type: "view",
+        name: "contentCategory/contentCategoryList",
+        displayName: "contentCategory/contentCategoryList",
+        projectId,
+        path: "app/WebContent/WEB-INF/jsp/contentCategory/contentCategoryList.jsp",
+        sourceAdapterIds: ["jsp-view"],
+        confidence: "high",
+        evidence: [],
+      }),
     ];
     const edges: GraphEdge[] = [
       createEdge({
@@ -1255,7 +2320,193 @@ describe("interactive report entry flow synthesis", () => {
       report.dataFlowCards.some((card) =>
         card.dao === "UserDaoImpl" &&
         card.mapper === "UserMapper" &&
-        card.sql === "findUsers",
+        Array.isArray(card.sqlCandidates) &&
+        card.sqlCandidates.some((candidate) => String(candidate).includes("findUsers")),
+      ),
+    ).toBe(true);
+  });
+
+  it("collects multiple sql candidates for one mapper-backed dao path", () => {
+    const projectId = "test-project";
+    const nodes: GraphNode[] = [
+      createNode({
+        id: "controller-1",
+        type: "controller",
+        name: "com.example.ContentCategoryAction",
+        displayName: "contentCategoryAction",
+        projectId,
+        path: "app/src/com/example/ContentCategoryAction.java",
+        sourceAdapterIds: ["java-source-basic"],
+        confidence: "medium",
+        evidence: [],
+        metadata: {
+          requestMappings: ["/contentcategory/list.as"],
+          requestHandlers: [
+            {
+              methodName: "getContentCategoryList",
+              requestMappings: ["/contentcategory/list.as"],
+              viewNames: ["contentCategory/contentCategoryList"],
+              responseBody: false,
+              produces: [],
+              contentTypes: [],
+              redirectTargets: [],
+              fileResponseHints: [],
+              serviceCalls: [
+                {
+                  targetType: "service",
+                  targetName: "com.example.CategoryService",
+                  methodName: "getCategoryContentList",
+                },
+              ],
+            },
+          ],
+        },
+      }),
+      createNode({
+        id: "service-1",
+        type: "service",
+        name: "com.example.CategoryService",
+        displayName: "CategoryService",
+        projectId,
+        path: "app/src/com/example/CategoryService.java",
+        sourceAdapterIds: ["java-source-basic"],
+        confidence: "medium",
+        evidence: [],
+      }),
+      createNode({
+        id: "dao-1",
+        type: "dao",
+        name: "com.example.CategoryDAOImpl",
+        displayName: "CategoryDAOImpl",
+        projectId,
+        path: "app/src/com/example/CategoryDAOImpl.java",
+        sourceAdapterIds: ["java-source-basic"],
+        confidence: "medium",
+        evidence: [],
+      }),
+      createNode({
+        id: "mapper-1",
+        type: "mapper",
+        name: "category",
+        displayName: "category",
+        projectId,
+        path: "app/src/main/resources/categoryDao.xml",
+        sourceAdapterIds: ["ibatis-sql-map"],
+        confidence: "high",
+        evidence: [],
+        metadata: {
+          namespace: "category",
+        },
+      }),
+      createNode({
+        id: "sql-1",
+        type: "sql_statement",
+        name: "category.getCategoryList",
+        displayName: "getCategoryList",
+        projectId,
+        path: "app/src/main/resources/categoryDao.xml",
+        sourceAdapterIds: ["ibatis-sql-map"],
+        confidence: "high",
+        evidence: [],
+      }),
+      createNode({
+        id: "sql-2",
+        type: "sql_statement",
+        name: "category.getCategoryContentList",
+        displayName: "getCategoryContentList",
+        projectId,
+        path: "app/src/main/resources/categoryDao.xml",
+        sourceAdapterIds: ["ibatis-sql-map"],
+        confidence: "high",
+        evidence: [],
+      }),
+    ];
+    const edges: GraphEdge[] = [
+      createEdge({
+        id: "depends-controller-service",
+        type: "depends_on",
+        from: "controller-1",
+        to: "service-1",
+        projectId,
+        sourceAdapterIds: ["java-source-basic"],
+        confidence: "medium",
+        directional: true,
+        evidence: [],
+      }),
+      createEdge({
+        id: "depends-service-dao",
+        type: "depends_on",
+        from: "service-1",
+        to: "dao-1",
+        projectId,
+        sourceAdapterIds: ["java-source-basic"],
+        confidence: "medium",
+        directional: true,
+        evidence: [],
+      }),
+      createEdge({
+        id: "queries-1",
+        type: "queries",
+        from: "dao-1",
+        to: "mapper-1",
+        projectId,
+        sourceAdapterIds: ["ibatis-sql-map"],
+        confidence: "medium",
+        directional: true,
+        evidence: [],
+      }),
+      createEdge({
+        id: "contains-1",
+        type: "contains",
+        from: "mapper-1",
+        to: "sql-1",
+        projectId,
+        sourceAdapterIds: ["ibatis-sql-map"],
+        confidence: "high",
+        directional: true,
+        evidence: [],
+      }),
+      createEdge({
+        id: "contains-2",
+        type: "contains",
+        from: "mapper-1",
+        to: "sql-2",
+        projectId,
+        sourceAdapterIds: ["ibatis-sql-map"],
+        confidence: "high",
+        directional: true,
+        evidence: [],
+      }),
+      createEdge({
+        id: "renders-1",
+        type: "renders",
+        from: "controller-1",
+        to: "view-1",
+        projectId,
+        sourceAdapterIds: ["java-source-basic"],
+        confidence: "high",
+        directional: true,
+        evidence: [],
+      }),
+    ];
+    const snapshot: AnalysisSnapshot = {
+      projectId,
+      profileId: "legacy-java-ee",
+      createdAt: "2026-04-09T00:00:00.000Z",
+      nodes,
+      edges,
+      entryPoints: [],
+      warnings: [],
+      artifacts: [],
+    };
+
+    const report = extractReportData(renderInteractiveHtmlReport(snapshot));
+    expect(
+      report.dataFlowCards.some((card) =>
+        String(card.dao) === "CategoryDAOImpl" &&
+        Array.isArray(card.sqlCandidates) &&
+        card.sqlCandidates.includes("getCategoryContentList") &&
+        card.sqlCandidates.includes("getCategoryList"),
       ),
     ).toBe(true);
   });

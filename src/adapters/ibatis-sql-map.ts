@@ -11,6 +11,7 @@ type SqlMapXml = {
     update?: Array<{ id?: string }> | { id?: string };
     delete?: Array<{ id?: string }> | { id?: string };
   };
+  sqlMapConfig?: unknown;
 };
 
 function asArray<T>(value: T | T[] | undefined): T[] {
@@ -25,18 +26,18 @@ export class IbatisSqlMapAdapter implements AnalyzerAdapter {
   readonly name = "iBATIS sql-map Adapter";
   readonly version = "0.1.0";
   readonly capabilities = {
-    supportedFilePatterns: ["**/*sql-map*.xml"],
+    supportedFilePatterns: ["**/*sql-map*.xml", "**/*Dao.xml", "**/*dao.xml", "**/*SqlMap.xml", "**/*sqlMap.xml"],
     technologyTags: ["java", "ibatis", "xml"],
     produces: ["mapper", "sql_statement"],
   };
 
   canRun(context: AdapterContext): boolean {
-    return context.fileIndex.files.some((file) => /sql-map.*\.xml$/.test(file));
+    return context.fileIndex.files.some((file) => /(?:sql-map.*|sqlmap.*|sqlMap.*|SqlMap.*|dao|Dao)\.xml$/i.test(file));
   }
 
   async collectInputs(context: AdapterContext): Promise<AdapterInputSet> {
     return {
-      files: context.fileIndex.files.filter((file) => /sql-map.*\.xml$/.test(file)),
+      files: context.fileIndex.files.filter((file) => /(?:sql-map.*|sqlmap.*|sqlMap.*|SqlMap.*|dao|Dao)\.xml$/i.test(file)),
     };
   }
 
@@ -48,6 +49,9 @@ export class IbatisSqlMapAdapter implements AnalyzerAdapter {
 
     for (const file of inputs.files) {
       const parsed = await parseXmlFile<SqlMapXml>(context.projectRoot, file);
+      if (!parsed.sqlMap) {
+        continue;
+      }
       const namespace = parsed.sqlMap?.namespace;
       if (!namespace) {
         warnings.push({
@@ -97,12 +101,14 @@ export class IbatisSqlMapAdapter implements AnalyzerAdapter {
       });
 
       for (const statement of statements) {
-        const sqlNodeId = nodeId(context.projectId, "sql_statement", `${namespace}.${statement.id}`);
+        const qualifiedStatementId = statement.id.includes(".") ? statement.id : `${namespace}.${statement.id}`;
+        const statementDisplayName = statement.id.split(".").pop() ?? statement.id;
+        const sqlNodeId = nodeId(context.projectId, "sql_statement", qualifiedStatementId);
         nodes.push({
           id: sqlNodeId,
           type: "sql_statement",
-          name: `${namespace}.${statement.id}`,
-          displayName: statement.id,
+          name: qualifiedStatementId,
+          displayName: statementDisplayName,
           projectId: context.projectId,
           path: file,
           language: "sql",

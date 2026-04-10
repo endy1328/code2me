@@ -7,7 +7,7 @@
 ## Current State
 
 - CLI 코어, Legacy Java EE 어댑터, 샘플 입력, 테스트, 인터랙티브 HTML 리포트가 포함되어 있다.
-- 현재는 프레임워크 부트스트랩 흐름, 화면/API 요청 흐름, 메서드 단위 concrete flow, JSP UI action 추적, 데이터 접근 축 요약, 대형 리포트 분리 출력까지 포함한 첫 구현을 마친 상태다.
+- 현재는 프레임워크 부트스트랩 흐름, 화면/API 요청 흐름, 메서드 단위 concrete flow, JSP UI action 추적, 추정 데이터 경로 요약, 대형 리포트 분리 출력까지 포함한 첫 구현을 마친 상태다.
 
 ## Repository Layout
 
@@ -167,22 +167,24 @@ NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- --list-adapters
 
 ## Report Navigation
 
-`report.html`은 초보자가 먼저 `앱이 어떻게 요청을 받는가`를 이해하고, 그다음 `특정 화면/API 요청이 어떤 코드 경로를 타는가`를 따라가도록 재구성된 요약 전용 페이지다.
+`report.html`은 초보자가 먼저 `앱이 어떻게 요청을 받는가`를 이해하고, 그다음 `특정 화면/논스크린 요청이 어떤 코드 경로를 타는가`를 따라가도록 재구성된 요약 전용 페이지다.
 
-- `Start Here`: 보고서 읽는 순서, 대표 `Framework Flow`, 대표 `Screen Flow`, 대표 `API Flow` 요약
+- `Start Here`: 보고서 읽는 순서, 대표 `Framework Flow`, 대표 `Screen Flow`, 대표 `Non-screen Flow` 요약
 - `Framework Flow`: `web.xml -> DispatcherServlet -> dispatcher-servlet.xml -> applicationContext*.xml -> request mapping` 부트스트랩 흐름 보기
 - `Screen Flows`: `요청 URL -> Controller/Action -> Service -> DAO -> Mapper/SQL -> View -> Layout` 중심의 화면 요청 흐름 보기
-- `API Flows`: `요청 URL -> Controller/Action -> Service -> DAO -> Mapper/SQL -> Response` 중심의 API/액션 요청 흐름 보기
+- `Non-screen Flows`: `요청 URL -> Controller/Action -> Service -> DAO -> Mapper/SQL -> Response` 중심의 논스크린 요청 흐름 보기
 - `Flow Details`: 선택된 흐름의 현재 컨텍스트, 진입 경로, 비즈니스 단계, 데이터 접근, 출력, UI action을 단계별로 추적
-- `Architecture Context`: 현재 흐름 뒤의 `Data Access Backbone`, 공통 모듈 허브, 런타임 구조 요약 보기
+- `Architecture Context`: 현재 흐름 뒤의 `Module Profiles`, `Inferred Data Paths`, 공통 모듈 허브, 런타임 구조 요약 보기
 - `Explore`: 메인 리포트에서는 분리 페이지 `explore.html`로 이동
 - `Evidence`: 메인 리포트에서는 분리 페이지 `evidence.html`로 이동
 - `Raw / JSON`: 메인 리포트에서는 `raw.html`과 `snapshot.json` 링크로 이동
 
-`type` 필터는 현재 탭 안에서 항목 종류를 좁히는 용도다. `가로형/카드형` 토글은 `Framework Flow`, `Screen Flows`, `API Flows`, `Architecture Context` 카드 레이아웃을 바꾸는 용도다. 각 결과 목록 섹션 제목에는 현재 필터 기준 `조회 건수`가 함께 표시된다.
+`type` 필터는 현재 탭 안에서 항목 종류를 좁히는 용도다. `가로형/카드형` 토글은 `Framework Flow`, `Screen Flows`, `Non-screen Flows`, `Architecture Context` 카드 레이아웃을 바꾸는 용도다. 각 결과 목록 섹션 제목에는 현재 필터 기준 `조회 건수`가 함께 표시된다.
 
-`Framework Flow`는 `web.xml`의 `url-pattern`, `DispatcherServlet`, `contextConfigLocation`, 선언된 Spring 설정 파일을 기준으로 “이 앱이 왜 이 URL을 받을 수 있는가”를 설명한다. `Screen Flows`와 `API Flows`는 가능하면 controller class가 아니라 `handler method + 단일 URL` 기준의 concrete flow로 분리되어 `URL -> action method -> service/dao -> view/response`를 보여준다. 여기에는 Spring annotation 기반 매핑뿐 아니라 `SimpleUrlHandlerMapping + PropertiesMethodNameResolver`로 정의된 `*.as` URL도 포함된다.
+`Framework Flow`는 `web.xml`의 `url-pattern`, `DispatcherServlet`, `contextConfigLocation`, 선언된 Spring 설정 파일을 기준으로 “이 앱이 왜 이 URL을 받을 수 있는가”를 설명한다. `Screen Flows`와 `Non-screen Flows`는 가능하면 controller class가 아니라 `handler method + 단일 URL` 기준의 concrete flow로 분리되어 `URL -> action method -> service/dao -> view/response`를 보여준다. 여기에는 Spring annotation 기반 매핑뿐 아니라 `SimpleUrlHandlerMapping + PropertiesMethodNameResolver`로 정의된 `*.as` URL도 포함된다.
 
-`Flow Details`는 상단에 현재 선택된 흐름 컨텍스트를 먼저 보여주고, 그 아래에서 `Entry Setup -> Request Path -> Business Steps -> Data Access -> View/Response -> UI Actions -> Related Configs`를 따라가게 한다. JSP 안의 `a href`, `form action`, `onclick`, `fetch`, `ajax`, `location.href`, `window.open` 신호를 추출해 “이 버튼/링크를 누르면 다음에 어떤 URL/API 흐름으로 가는가”를 연결한다. 관련 데이터가 있을 때만 `Open Data Flow` 액션이 노출된다.
+`Non-screen Flows`는 현재 `responseKind`를 함께 보여준다. 기본 종류는 `json`, `file`, `redirect`, `action`, `unknown`이다. 이 값은 `@ResponseBody`, `produces`, response content-type, redirect view name, 다운로드/attachment 흔적을 우선 보고, 부족한 경우 URL/메서드명 휴리스틱으로 보완한다. `external-facing candidate`, `ajax`, `download`는 아직 확정 타입이 아니라 보조 태그다.
 
-`Architecture Context`는 확정 실행 경로가 아니라, 현재 흐름 뒤에서 공통으로 보이는 데이터 접근 축과 공유 모듈을 요약한다. `Controller -> Service -> DAO` 체인을 우선 만들고, DAO 이름과 mapper namespace suffix가 맞으면 `Mapper/SQL`도 fallback으로 채운다. 데이터 카드에는 전체 요청 URL 목록과 판단 근거가 함께 표시된다. 대형 스냅샷에서는 메인 `report.html`이 흐름 요약 중심으로 유지되고, 무거운 `Explore`, `Evidence`, `Raw`는 각각 `explore.html`, `evidence.html`, `raw.html`로 분리된다.
+`Flow Details`는 상단에 현재 선택된 흐름 컨텍스트를 먼저 보여주고, 그 아래에서 `Entry Setup -> Request Path -> Business Steps -> Data Access -> View/Response -> UI Actions -> Related Configs`를 따라가게 한다. 논스크린 흐름 상세에는 `response kind`, `content types`, `redirect target`, `file response hints`도 함께 노출한다. JSP 안의 `a href`, `form action`, `onclick`, `fetch`, `ajax`, `location.href`, `window.open` 신호를 추출해 “이 버튼/링크를 누르면 다음에 어떤 URL/논스크린 흐름으로 가는가”를 연결한다. 관련 데이터가 있을 때만 `Open Data Flow` 액션이 노출된다.
+
+`Architecture Context`는 확정 실행 경로가 아니라, 현재 흐름 뒤에서 공통으로 보이는 추정 데이터 경로와 공유 모듈을 요약한다. `Module Profiles`는 모듈별 `API/Web/Internal action` 점수와 `responseKind` 분포를 바탕으로 `MVC-heavy web app`, `API-centric mixed app` 같은 성격 라벨을 보여준다. `Controller -> Service -> DAO` 체인을 우선 만들고, DAO 이름과 mapper namespace suffix가 맞으면 `Mapper/SQL`도 fallback으로 채운다. 추정 데이터 경로 카드는 `근거 강함(confirmed)`, `추정(inferred)`, `휴리스틱(heuristic)`으로 나뉘고, 약한 근거나 이름 기반 fallback만 있는 카드는 기본적으로 숨겨진다. 데이터 카드에는 전체 요청 URL 목록, 판단 근거, 근거 종류가 함께 표시된다. 대형 스냅샷에서는 메인 `report.html`이 흐름 요약 중심으로 유지되고, 무거운 `Explore`, `Evidence`, `Raw`는 각각 `explore.html`, `evidence.html`, `raw.html`로 분리된다.

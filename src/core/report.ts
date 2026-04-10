@@ -185,10 +185,17 @@ interface DataFlowCard {
   controllerId: string | undefined;
   controller: string | undefined;
   service: string | undefined;
+  biz: string | undefined;
   dao: string | undefined;
   mapper: string | undefined;
   sql: string | undefined;
+  sqlCandidates: string[] | undefined;
+  sqlEvidenceLabel: string | undefined;
+  integration: string[] | undefined;
   evidenceLabel: string;
+  inferenceLevel: "confirmed" | "inferred" | "heuristic";
+  evidenceKinds: string[];
+  hiddenByDefault: boolean;
   confidence: string;
 }
 
@@ -226,15 +233,19 @@ interface RequestFlowCard {
   methodResolverRef: string | undefined;
   action: string | undefined;
   service: string | undefined;
+  biz: string | undefined;
   dao: string | undefined;
   mapper: string | undefined;
   sql: string | undefined;
+  integration: string[] | undefined;
   view: string | undefined;
   layout: string | undefined;
   viewVariants: string[];
   layoutVariants: string[];
   variantCount: number;
   responseType: string | undefined;
+  responseKind: string | undefined;
+  responseTags: string[];
   logicalViewNames: string[];
   resolvedViewPaths: string[];
   viewResolverSummary: string | undefined;
@@ -249,6 +260,8 @@ interface FlowDetailCard {
   title: string;
   summary: string;
   confidence: string;
+  responseKind?: string;
+  responseTags?: string[];
   relatedDataSearchTerm: string | undefined;
   viewPaths?: string[];
   sections: Array<{
@@ -262,6 +275,23 @@ interface FlowDetailCard {
       nextDetailId?: string;
     }>;
   }>;
+}
+
+interface ModuleProfileCard {
+  id: string;
+  type: string;
+  title: string;
+  modulePath: string;
+  profileLabel: string;
+  evidence: string[];
+  screenFlowCount: number;
+  nonScreenFlowCount: number;
+  controllerCount: number;
+  serviceCount: number;
+  configCount: number;
+  sharedLibraryCount: number;
+  responseKindCounts?: Record<string, number>;
+  profileScores?: Record<string, number>;
 }
 
 interface ReportPayload {
@@ -283,6 +313,7 @@ interface ReportPayload {
   screenFlowCards: RequestFlowCard[];
   apiFlowCards: RequestFlowCard[];
   flowDetails: FlowDetailCard[];
+  moduleProfileCards: ModuleProfileCard[];
   libraryAnchorCards: ReturnType<typeof collectLibraryAnchorCards>;
   largeSnapshotMode: boolean;
   rawSnapshotPath: string;
@@ -310,6 +341,33 @@ interface ReportPayload {
   };
 }
 
+function inferenceLevelRank(value: DataFlowCard["inferenceLevel"]): number {
+  if (value === "confirmed") {
+    return 3;
+  }
+  if (value === "inferred") {
+    return 2;
+  }
+  return 1;
+}
+
+function pickStrongerInferenceLevel(
+  left: DataFlowCard["inferenceLevel"],
+  right: DataFlowCard["inferenceLevel"],
+): DataFlowCard["inferenceLevel"] {
+  return inferenceLevelRank(left) >= inferenceLevelRank(right) ? left : right;
+}
+
+function shouldHideDataFlowCardByDefault(card: Pick<DataFlowCard, "inferenceLevel" | "confidence" | "evidenceKinds">): boolean {
+  if (card.inferenceLevel === "heuristic") {
+    return true;
+  }
+  if (card.confidence === "low") {
+    return true;
+  }
+  return card.evidenceKinds.length < 2;
+}
+
 function findNode(snapshot: AnalysisSnapshot, id: string): GraphNode | undefined {
   return snapshot.nodes.find((node) => node.id === id);
 }
@@ -335,9 +393,64 @@ function normalizeSymbolStem(value: string | undefined): string | undefined {
   let previous = "";
   while (stem !== previous) {
     previous = stem;
-    stem = stem.replace(/(dao|mapper|repository|sqlmap|ibatis|mybatis|impl)$/i, "");
+    stem = stem.replace(/(service|biz|dao|mapper|repository|sqlmap|ibatis|mybatis|impl)$/i, "");
   }
   return stem || lastToken;
+}
+
+function pickBestSqlCandidate(sqlCandidates: string[] | undefined, preferredNames: string[]): string | undefined {
+  if (!Array.isArray(sqlCandidates) || sqlCandidates.length === 0) {
+    return undefined;
+  }
+  const normalizedPreferences = uniqueStrings(
+    preferredNames
+      .map((value) => value?.trim())
+      .filter((value): value is string => Boolean(value)),
+  );
+  if (normalizedPreferences.length === 0) {
+    return sqlCandidates[0];
+  }
+
+  const scoreCandidate = (candidate: string): number => {
+    const candidateLower = candidate.toLowerCase();
+    const candidateTail = candidateLower.split(".").pop() ?? candidateLower;
+    const candidateStem = normalizeSymbolStem(candidateTail);
+    let bestScore = 0;
+    for (const preferredName of normalizedPreferences) {
+      const preferredLower = preferredName.toLowerCase();
+      const preferredStem = normalizeSymbolStem(preferredName);
+      if (candidateLower === preferredLower || candidateTail === preferredLower) {
+        bestScore = Math.max(bestScore, 10);
+      } else if (candidateLower.endsWith(`.${preferredLower}`) || candidateTail === preferredLower) {
+        bestScore = Math.max(bestScore, 9);
+      } else if (candidateTail.includes(preferredLower) || preferredLower.includes(candidateTail)) {
+        bestScore = Math.max(bestScore, 7);
+      } else if (candidateStem && preferredStem && candidateStem === preferredStem) {
+        bestScore = Math.max(bestScore, 6);
+      }
+    }
+    return bestScore;
+  };
+
+  return [...sqlCandidates]
+    .map((candidate) => ({ candidate, score: scoreCandidate(candidate) }))
+    .sort((left, right) => right.score - left.score || left.candidate.localeCompare(right.candidate))[0]?.candidate
+    ?? sqlCandidates[0];
+}
+
+function normalizeSqlCandidate(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const parts = trimmed.split(".");
+  if (parts.length >= 3 && parts[0] === parts[1]) {
+    return parts.slice(1).join(".");
+  }
+  return trimmed;
 }
 
 function firstEntryPointReason(snapshot: AnalysisSnapshot): string | undefined {
@@ -357,6 +470,10 @@ function getControllerRequestHandlers(node: GraphNode | undefined): Array<{
   requestMappings: string[];
   viewNames: string[];
   responseBody: boolean;
+  produces: string[];
+  contentTypes: string[];
+  redirectTargets: string[];
+  fileResponseHints: string[];
   serviceCalls: Array<{ targetType: string; targetName: string; methodName: string }>;
 }> {
   const handlers = node?.metadata?.requestHandlers;
@@ -373,6 +490,18 @@ function getControllerRequestHandlers(node: GraphNode | undefined): Array<{
         ? handler.viewNames.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
         : [],
       responseBody: handler?.responseBody === true,
+      produces: Array.isArray(handler?.produces)
+        ? handler.produces.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
+        : [],
+      contentTypes: Array.isArray(handler?.contentTypes)
+        ? handler.contentTypes.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
+        : [],
+      redirectTargets: Array.isArray(handler?.redirectTargets)
+        ? handler.redirectTargets.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
+        : [],
+      fileResponseHints: Array.isArray(handler?.fileResponseHints)
+        ? handler.fileResponseHints.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
+        : [],
       serviceCalls: Array.isArray(handler?.serviceCalls)
         ? handler.serviceCalls
           .filter((value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null)
@@ -383,7 +512,15 @@ function getControllerRequestHandlers(node: GraphNode | undefined): Array<{
           }))
         : [],
     }))
-    .filter((handler) => handler.requestMappings.length > 0 || handler.viewNames.length > 0 || handler.serviceCalls.length > 0);
+    .filter((handler) =>
+      handler.requestMappings.length > 0 ||
+      handler.viewNames.length > 0 ||
+      handler.serviceCalls.length > 0 ||
+      handler.produces.length > 0 ||
+      handler.contentTypes.length > 0 ||
+      handler.redirectTargets.length > 0 ||
+      handler.fileResponseHints.length > 0,
+    );
 }
 
 function shortTypeName(value: string | undefined): string | undefined {
@@ -402,6 +539,183 @@ function getHandlerServiceCalls(
     ? handlers.find((handler) => handler.methodName === action)
     : handlers[0];
   return targetHandler?.serviceCalls ?? [];
+}
+
+function getHandlerResponseBody(node: GraphNode | undefined, action: string | undefined): boolean {
+  const handlers = getControllerRequestHandlers(node);
+  const targetHandler = action
+    ? handlers.find((handler) => handler.methodName === action)
+    : handlers[0];
+  return targetHandler?.responseBody === true;
+}
+
+function getHandlerResponseMetadata(node: GraphNode | undefined, action: string | undefined): {
+  produces: string[];
+  contentTypes: string[];
+  redirectTargets: string[];
+  fileResponseHints: string[];
+} {
+  const handlers = getControllerRequestHandlers(node);
+  const targetHandler = action
+    ? handlers.find((handler) => handler.methodName === action)
+    : handlers[0];
+  return {
+    produces: targetHandler?.produces ?? [],
+    contentTypes: targetHandler?.contentTypes ?? [],
+    redirectTargets: targetHandler?.redirectTargets ?? [],
+    fileResponseHints: targetHandler?.fileResponseHints ?? [],
+  };
+}
+
+function getDaoMethodSummaries(node: GraphNode | undefined): Array<{
+  methodName: string;
+  dependencyCalls: Array<{ targetType: string; targetName: string; methodName: string }>;
+  sqlCalls: Array<{ statementId: string; operation: string }>;
+  externalCalls: Array<{ kind: string; target: string }>;
+}> {
+  const summaries = node?.metadata?.methodSummaries;
+  if (!Array.isArray(summaries)) {
+    return [];
+  }
+  return summaries
+    .filter((value): value is Record<string, unknown> => typeof value === "object" && value !== null)
+    .map((summary) => ({
+      methodName: typeof summary.methodName === "string" ? summary.methodName : "",
+      dependencyCalls: Array.isArray(summary.dependencyCalls)
+        ? summary.dependencyCalls
+          .filter((value): value is Record<string, unknown> => typeof value === "object" && value !== null)
+          .map((call) => ({
+            targetType: typeof call.targetType === "string" ? call.targetType : "",
+            targetName: typeof call.targetName === "string" ? call.targetName : "",
+            methodName: typeof call.methodName === "string" ? call.methodName : "",
+          }))
+          .filter((call) => call.targetType.length > 0 && call.targetName.length > 0 && call.methodName.length > 0)
+        : [],
+      sqlCalls: Array.isArray(summary.sqlCalls)
+        ? summary.sqlCalls
+          .filter((value): value is Record<string, unknown> => typeof value === "object" && value !== null)
+          .map((call) => ({
+            statementId: typeof call.statementId === "string" ? call.statementId : "",
+            operation: typeof call.operation === "string" ? call.operation : "",
+          }))
+          .filter((call) => call.statementId.length > 0)
+        : [],
+      externalCalls: Array.isArray(summary.externalCalls)
+        ? summary.externalCalls
+          .filter((value): value is Record<string, unknown> => typeof value === "object" && value !== null)
+          .map((call) => ({
+            kind: typeof call.kind === "string" ? call.kind : "",
+            target: typeof call.target === "string" ? call.target : "",
+          }))
+          .filter((call) => call.kind.length > 0 && call.target.length > 0)
+        : [],
+    }))
+    .filter((summary) => summary.methodName.length > 0 && (summary.sqlCalls.length > 0 || summary.dependencyCalls.length > 0 || summary.externalCalls.length > 0));
+}
+
+function inferNonScreenResponseTags(input: {
+  route: string | undefined;
+  action: string | undefined;
+  handlerMappingPatterns: string[];
+  requestMappings?: string[];
+  responseBody: boolean;
+  produces?: string[];
+  contentTypes?: string[];
+  internalCallerCount?: number;
+}): string[] {
+  const routeSignals = [input.route, ...(input.requestMappings ?? [])]
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+  const haystacks = [
+    input.action,
+    ...routeSignals,
+    ...(routeSignals.length === 0 ? input.handlerMappingPatterns : []),
+    ...(input.produces ?? []),
+    ...(input.contentTypes ?? []),
+  ]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .map((value) => value.toLowerCase());
+
+  const tags: string[] = [];
+  const hasPattern = (pattern: RegExp): boolean => haystacks.some((value) => pattern.test(value));
+
+  if (hasPattern(/(^|\/)(download|excel|export)(\/|$|[._-])/i) || hasPattern(/(download|excel|export)/i)) {
+    tags.push("download");
+  }
+  if (hasPattern(/ajax/i)) {
+    tags.push("ajax");
+  }
+  if ((input.internalCallerCount ?? 0) > 0) {
+    tags.push("internal-ui-linked");
+  }
+  if (
+    input.responseBody ||
+    (input.produces ?? []).some((value) => /(json|xml|javascript)/i.test(value)) ||
+    (input.contentTypes ?? []).some((value) => /(json|xml|javascript)/i.test(value)) ||
+    hasPattern(/(^|\/)(api|openapi|galaxyapi)(\/|$)/i) ||
+    hasPattern(/\.json($|[/?])/i) ||
+    hasPattern(/\/v[0-9]+(\/|$)/i)
+  ) {
+    tags.push("external-facing candidate");
+  }
+
+  return tags;
+}
+
+function inferNonScreenResponseKind(input: {
+  route: string | undefined;
+  action: string | undefined;
+  handlerMappingPatterns: string[];
+  requestMappings?: string[];
+  logicalViewNames: string[];
+  responseBody: boolean;
+  responseTags: string[];
+  produces: string[];
+  contentTypes: string[];
+  redirectTargets: string[];
+  fileResponseHints: string[];
+}): "json" | "file" | "redirect" | "action" | "unknown" {
+  const routeSignals = [input.route, ...(input.requestMappings ?? [])]
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+  const haystacks = [
+    input.action,
+    ...routeSignals,
+    ...(routeSignals.length === 0 ? input.handlerMappingPatterns : []),
+    ...input.logicalViewNames,
+    ...input.produces,
+    ...input.contentTypes,
+    ...input.redirectTargets,
+    ...input.fileResponseHints,
+  ]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .map((value) => value.toLowerCase());
+
+  const hasPattern = (pattern: RegExp): boolean => haystacks.some((value) => pattern.test(value));
+
+  if (input.redirectTargets.length > 0 || input.logicalViewNames.some((value) => /^redirect:/i.test(value))) {
+    return "redirect";
+  }
+  if (
+    input.fileResponseHints.length > 0 ||
+    input.responseTags.includes("download") ||
+    hasPattern(/(^|\/)(download|excel|export|file|csv|pdf|zip)(\/|$|[._-])/i) ||
+    hasPattern(/(download|excel|export|attachment)/i)
+  ) {
+    return "file";
+  }
+  if (
+    input.responseBody ||
+    input.produces.some((value) => /(json|xml|javascript)/i.test(value)) ||
+    input.contentTypes.some((value) => /(json|xml|javascript)/i.test(value)) ||
+    hasPattern(/(^|\/)(api|openapi|galaxyapi)(\/|$)/i) ||
+    hasPattern(/\.json($|[/?])/i) ||
+    hasPattern(/\/v[0-9]+(\/|$)/i)
+  ) {
+    return "json";
+  }
+  if (haystacks.length > 0) {
+    return "action";
+  }
+  return "unknown";
 }
 
 function getControllerResolutionInfo(node: GraphNode | undefined): {
@@ -686,12 +1000,13 @@ function extractSharedModuleNames(paths: Array<string | undefined>): string[] {
 
 function buildControllerDataContext(snapshot: AnalysisSnapshot, controllerNode: GraphNode | undefined): {
   serviceNames: string[];
+  bizNames: string[];
   daoNames: string[];
   sharedModuleNames: string[];
   searchTerm: string | undefined;
 } {
   if (!controllerNode) {
-    return { serviceNames: [], daoNames: [], sharedModuleNames: [], searchTerm: undefined };
+    return { serviceNames: [], bizNames: [], daoNames: [], sharedModuleNames: [], searchTerm: undefined };
   }
 
   const directTargets = snapshot.edges
@@ -700,29 +1015,48 @@ function buildControllerDataContext(snapshot: AnalysisSnapshot, controllerNode: 
     .filter((node): node is GraphNode => Boolean(node));
 
   const services = directTargets.filter((node) => node.type === "service");
+  const directBizs = directTargets.filter((node) => node.type === "biz");
   const directDaos = directTargets.filter((node) => node.type === "dao");
+  const serviceBizs = services.flatMap((serviceNode) =>
+    snapshot.edges
+      .filter((edge) => edge.type === "depends_on" && edge.from === serviceNode.id)
+      .map((edge) => findNode(snapshot, edge.to))
+      .filter((node): node is GraphNode => node?.type === "biz"),
+  );
   const serviceDaos = services.flatMap((serviceNode) =>
     snapshot.edges
       .filter((edge) => edge.type === "depends_on" && edge.from === serviceNode.id)
       .map((edge) => findNode(snapshot, edge.to))
       .filter((node): node is GraphNode => node?.type === "dao"),
   );
+  const bizDaos = [...directBizs, ...serviceBizs].flatMap((bizNode) =>
+    snapshot.edges
+      .filter((edge) => edge.type === "depends_on" && edge.from === bizNode.id)
+      .map((edge) => findNode(snapshot, edge.to))
+      .filter((node): node is GraphNode => node?.type === "dao"),
+  );
 
   const serviceNames = uniqueStrings(services.map((node) => node.displayName ?? node.name));
-  const daoNames = uniqueStrings([...directDaos, ...serviceDaos].map((node) => node.displayName ?? node.name));
+  const bizNames = uniqueStrings([...directBizs, ...serviceBizs].map((node) => node.displayName ?? node.name));
+  const daoNames = uniqueStrings([...directDaos, ...serviceDaos, ...bizDaos].map((node) => node.displayName ?? node.name));
   const sharedModuleNames = extractSharedModuleNames([
     ...directTargets.map((node) => node.path),
+    ...serviceBizs.map((node) => node.path),
     ...serviceDaos.map((node) => node.path),
+    ...bizDaos.map((node) => node.path),
   ]);
-  const searchTerm = daoNames[0] ?? serviceNames[0];
+  const searchTerm = daoNames[0] ?? bizNames[0] ?? serviceNames[0];
 
-  return { serviceNames, daoNames, sharedModuleNames, searchTerm };
+  return { serviceNames, bizNames, daoNames, sharedModuleNames, searchTerm };
 }
 
-function buildDataFlowSummary(serviceNames: string[], daoNames: string[], sharedModuleNames: string[] = []): string[] {
+function buildDataFlowSummary(serviceNames: string[], bizNames: string[], daoNames: string[], sharedModuleNames: string[] = []): string[] {
   const lines: string[] = [];
   if (serviceNames.length > 0) {
     lines.push(`service: ${formatRouteLabel(serviceNames) ?? serviceNames[0]}`);
+  }
+  if (bizNames.length > 0) {
+    lines.push(`biz: ${formatRouteLabel(bizNames) ?? bizNames[0]}`);
   }
   if (daoNames.length > 0) {
     lines.push(`dao: ${formatRouteLabel(daoNames) ?? daoNames[0]}`);
@@ -860,7 +1194,7 @@ function collectScreenCards(snapshot: AnalysisSnapshot): ScreenCard[] {
           layout: layoutNode?.path ?? layoutNode?.name,
           route: routeLabel ?? findEntryPointReasonForNode(snapshot, fromNode) ?? findEntryPointReasonForNode(snapshot, toNode),
           routeValues: requestMappings,
-          relatedDataSummary: buildDataFlowSummary(controllerDataContext.serviceNames, controllerDataContext.daoNames, controllerDataContext.sharedModuleNames),
+          relatedDataSummary: buildDataFlowSummary(controllerDataContext.serviceNames, controllerDataContext.bizNames, controllerDataContext.daoNames, controllerDataContext.sharedModuleNames),
           relatedDataSearchTerm: controllerDataContext.searchTerm,
           confidence: edge.confidence,
         });
@@ -899,7 +1233,7 @@ function collectScreenCards(snapshot: AnalysisSnapshot): ScreenCard[] {
           layout: undefined,
           route: formatRouteLabel(requestMappings) ?? findEntryPointReasonForNode(snapshot, controllerNode),
           routeValues: requestMappings,
-          relatedDataSummary: buildDataFlowSummary(controllerDataContext.serviceNames, controllerDataContext.daoNames, controllerDataContext.sharedModuleNames),
+          relatedDataSummary: buildDataFlowSummary(controllerDataContext.serviceNames, controllerDataContext.bizNames, controllerDataContext.daoNames, controllerDataContext.sharedModuleNames),
           relatedDataSearchTerm: controllerDataContext.searchTerm,
           confidence: controllerNode.confidence,
         });
@@ -936,7 +1270,7 @@ function collectScreenCards(snapshot: AnalysisSnapshot): ScreenCard[] {
       layout: undefined,
       route: formatRouteLabel(requestMappings) ?? findEntryPointReasonForNode(snapshot, controllerNode),
       routeValues: requestMappings,
-      relatedDataSummary: buildDataFlowSummary(controllerDataContext.serviceNames, controllerDataContext.daoNames, controllerDataContext.sharedModuleNames),
+      relatedDataSummary: buildDataFlowSummary(controllerDataContext.serviceNames, controllerDataContext.bizNames, controllerDataContext.daoNames, controllerDataContext.sharedModuleNames),
       relatedDataSearchTerm: controllerDataContext.searchTerm,
       confidence: controllerNode.confidence,
     });
@@ -1023,12 +1357,67 @@ function collectDataFlowCards(snapshot: AnalysisSnapshot): DataFlowCard[] {
       .map((candidate) => findNode(snapshot, candidate.from))
       .filter((node): node is GraphNode => node?.type === type);
 
-  const chooseBestController = (daoNodeId: string, serviceNodes: GraphNode[]): GraphNode | undefined => {
-    const controllerIds = uniqueStrings([
+  const relatedServiceNodes = (serviceNode: GraphNode): GraphNode[] => {
+    const serviceStem = normalizeSymbolStem(serviceNode.displayName ?? serviceNode.name);
+    if (!serviceStem) {
+      return [serviceNode];
+    }
+    return snapshot.nodes.filter((node) =>
+      node.type === "service" && normalizeSymbolStem(node.displayName ?? node.name) === serviceStem,
+    );
+  };
+
+  const controllerNodesForService = (serviceNode: GraphNode): GraphNode[] =>
+    uniqueStrings(
+      relatedServiceNodes(serviceNode).flatMap((candidate) =>
+        inboundDependencyNodes(candidate.id, "controller").map((node) => node.id),
+      ),
+    )
+      .map((id) => findNode(snapshot, id))
+      .filter((node): node is GraphNode => Boolean(node));
+
+  const controllersCallingService = (serviceNodes: GraphNode[]): GraphNode[] => {
+    const serviceStems = uniqueStrings(serviceNodes.map((node) => normalizeSymbolStem(node.displayName ?? node.name)).filter(Boolean));
+    if (serviceStems.length === 0) {
+      return [];
+    }
+    return snapshot.nodes
+      .filter((node) => node.type === "controller")
+      .filter((node) => {
+        const handlers = getControllerRequestHandlers(node);
+        return handlers.some((handler) =>
+          handler.serviceCalls.some((call) =>
+            call.targetType === "service" &&
+            serviceStems.includes(normalizeSymbolStem(shortTypeName(call.targetName)) ?? ""),
+          ),
+        );
+      });
+  };
+
+  const candidateControllersForDao = (daoNodeId: string, serviceNodes: GraphNode[], bizNodes: GraphNode[] = []): GraphNode[] =>
+    uniqueStrings([
       ...inboundDependencyNodes(daoNodeId, "controller").map((node) => node.id),
-      ...serviceNodes.flatMap((serviceNode) => inboundDependencyNodes(serviceNode.id, "controller").map((node) => node.id)),
-    ]);
-    return controllerIds[0] ? findNode(snapshot, controllerIds[0]) : undefined;
+      ...serviceNodes.flatMap((serviceNode) => controllerNodesForService(serviceNode).map((node) => node.id)),
+      ...controllersCallingService(serviceNodes).map((node) => node.id),
+      ...bizNodes.flatMap((bizNode) => inboundDependencyNodes(bizNode.id, "controller").map((node) => node.id)),
+      ...bizNodes.flatMap((bizNode) =>
+        inboundDependencyNodes(bizNode.id, "service").flatMap((serviceNode) =>
+          controllerNodesForService(serviceNode).map((node) => node.id),
+        ),
+      ),
+    ])
+      .map((id) => findNode(snapshot, id))
+      .filter((node): node is GraphNode => Boolean(node));
+
+  const inboundServiceNodesForDao = (daoNodeId: string): { serviceNodes: GraphNode[]; bizNodes: GraphNode[] } => {
+    const bizNodes = inboundDependencyNodes(daoNodeId, "biz");
+    const serviceNodes = uniqueStrings([
+      ...inboundDependencyNodes(daoNodeId, "service").map((node) => node.id),
+      ...bizNodes.flatMap((bizNode) => inboundDependencyNodes(bizNode.id, "service").map((node) => node.id)),
+    ])
+      .map((id) => findNode(snapshot, id))
+      .filter((node): node is GraphNode => Boolean(node));
+    return { serviceNodes, bizNodes };
   };
 
   const availableMapperNodes = snapshot.nodes.filter((node) => node.type === "mapper");
@@ -1041,14 +1430,26 @@ function collectDataFlowCards(snapshot: AnalysisSnapshot): DataFlowCard[] {
     mapperSqlIndex.set(mapperNode.id, sqlNodes);
   }
 
-  const pickFallbackMapper = (daoNode: GraphNode): { mapperNode: GraphNode; sqlNode: GraphNode | undefined } | undefined => {
+  const daoSqlIndex = new Map<string, Array<{ methodName: string; statementId: string; operation: string }>>();
+  for (const daoNode of snapshot.nodes.filter((node) => node.type === "dao")) {
+    const methodEntries = getDaoMethodSummaries(daoNode).flatMap((summary) =>
+      summary.sqlCalls.map((call) => ({
+        methodName: summary.methodName,
+        statementId: normalizeSqlCandidate(call.statementId) ?? call.statementId,
+        operation: call.operation,
+      })),
+    );
+    daoSqlIndex.set(daoNode.id, methodEntries);
+  }
+
+  const pickFallbackMapper = (daoNode: GraphNode): { mapperNode: GraphNode; sqlNodes: GraphNode[] } | undefined => {
     const daoCandidates = uniqueStrings([
       daoNode.name,
       daoNode.displayName,
       typeof daoNode.metadata?.className === "string" ? daoNode.metadata.className : undefined,
     ]).filter((value): value is string => typeof value === "string" && value.length > 0);
     const daoStem = daoCandidates.map((value) => normalizeSymbolStem(value)).find(Boolean);
-    let bestMatch: { mapperNode: GraphNode; sqlNode: GraphNode | undefined; score: number } | undefined;
+    let bestMatch: { mapperNode: GraphNode; sqlNodes: GraphNode[]; score: number } | undefined;
 
     for (const mapperNode of availableMapperNodes) {
       const namespace = typeof mapperNode.metadata?.namespace === "string" ? mapperNode.metadata.namespace : mapperNode.name;
@@ -1077,14 +1478,14 @@ function collectDataFlowCards(snapshot: AnalysisSnapshot): DataFlowCard[] {
         continue;
       }
 
-      const sqlNode = mapperSqlIndex.get(mapperNode.id)?.[0];
+      const sqlNodes = mapperSqlIndex.get(mapperNode.id) ?? [];
       if (!bestMatch || score > bestMatch.score) {
-        bestMatch = { mapperNode, sqlNode, score };
+        bestMatch = { mapperNode, sqlNodes, score };
       }
     }
 
     return bestMatch && bestMatch.score >= 3
-      ? { mapperNode: bestMatch.mapperNode, sqlNode: bestMatch.sqlNode }
+      ? { mapperNode: bestMatch.mapperNode, sqlNodes: bestMatch.sqlNodes }
       : undefined;
   };
 
@@ -1102,9 +1503,23 @@ function collectDataFlowCards(snapshot: AnalysisSnapshot): DataFlowCard[] {
       controllerId: existing.controllerId ?? card.controllerId,
       controller: existing.controller ?? card.controller,
       service: existing.service ?? card.service,
+      biz: existing.biz ?? card.biz,
+      dao: existing.dao ?? card.dao,
       mapper: existing.mapper ?? card.mapper,
       sql: existing.sql ?? card.sql,
+      sqlCandidates: existing.sqlCandidates && existing.sqlCandidates.length > 0
+        ? existing.sqlCandidates
+        : card.sqlCandidates,
+      sqlEvidenceLabel: existing.sqlEvidenceLabel ?? card.sqlEvidenceLabel,
+      integration: existing.integration && existing.integration.length > 0 ? existing.integration : card.integration,
       evidenceLabel: existing.evidenceLabel || card.evidenceLabel,
+      inferenceLevel: pickStrongerInferenceLevel(existing.inferenceLevel, card.inferenceLevel),
+      evidenceKinds: uniqueStrings([...existing.evidenceKinds, ...card.evidenceKinds]),
+      hiddenByDefault: shouldHideDataFlowCardByDefault({
+        inferenceLevel: pickStrongerInferenceLevel(existing.inferenceLevel, card.inferenceLevel),
+        confidence: existing.confidence === "high" || card.confidence !== "high" ? existing.confidence : "high",
+        evidenceKinds: uniqueStrings([...existing.evidenceKinds, ...card.evidenceKinds]),
+      }),
       confidence: existing.confidence === "high" || card.confidence !== "high" ? existing.confidence : "high",
     });
   };
@@ -1115,11 +1530,15 @@ function collectDataFlowCards(snapshot: AnalysisSnapshot): DataFlowCard[] {
       .filter((candidate) => candidate.type === "depends_on" && candidate.from === serviceNode.id)
       .map((candidate) => findNode(snapshot, candidate.to))
       .filter((node): node is GraphNode => node?.type === "dao");
-    if (daoTargets.length > 0) {
+    const bizTargets = snapshot.edges
+      .filter((candidate) => candidate.type === "depends_on" && candidate.from === serviceNode.id)
+      .map((candidate) => findNode(snapshot, candidate.to))
+      .filter((node): node is GraphNode => node?.type === "biz");
+    if (daoTargets.length > 0 || bizTargets.length > 0) {
       continue;
     }
 
-    const controllerNodes = inboundDependencyNodes(serviceNode.id, "controller");
+    const controllerNodes = controllerNodesForService(serviceNode);
     if (controllerNodes.length === 0) {
       continue;
     }
@@ -1134,34 +1553,59 @@ function collectDataFlowCards(snapshot: AnalysisSnapshot): DataFlowCard[] {
       controllerId: controllerNode?.id,
       controller: controllerNode?.displayName ?? controllerNode?.name,
       service: serviceNode.displayName ?? serviceNode.name,
+      biz: undefined,
       dao: undefined,
       mapper: undefined,
       sql: undefined,
+      sqlCandidates: undefined,
+      sqlEvidenceLabel: undefined,
+      integration: undefined,
       evidenceLabel: "controller -> service dependency",
+      inferenceLevel: "inferred",
+      evidenceKinds: ["controller-service-edge"],
+      hiddenByDefault: true,
       confidence: controllerNode ? "medium" : serviceNode.confidence,
     });
   }
 
   const daoNodes = snapshot.nodes.filter((node) => node.type === "dao");
   for (const daoNode of daoNodes) {
-    const serviceNodes = inboundDependencyNodes(daoNode.id, "service");
-    const controllerNode = chooseBestController(daoNode.id, serviceNodes);
-    const route = formatRouteLabel(getControllerRequestMappings(controllerNode));
-
-    upsertCard({
-      id: `data-flow:${daoNode.id}`,
-      type: "data_flow",
-      route,
-      routeValues: getControllerRequestMappings(controllerNode),
-      controllerId: controllerNode?.id,
-      controller: controllerNode?.displayName ?? controllerNode?.name,
-      service: uniqueStrings(serviceNodes.map((node) => node.displayName ?? node.name))[0],
-      dao: daoNode.displayName ?? daoNode.name,
-      mapper: undefined,
-      sql: undefined,
-      evidenceLabel: "controller/service -> dao dependency",
-      confidence: serviceNodes.length > 0 || controllerNode ? "medium" : daoNode.confidence,
-    });
+    const { serviceNodes, bizNodes } = inboundServiceNodesForDao(daoNode.id);
+    const daoMethodSummaries = getDaoMethodSummaries(daoNode);
+    const daoExternalCalls = uniqueStrings(daoMethodSummaries.flatMap((summary) =>
+      summary.externalCalls.map((call) => `${call.kind}: ${call.target}`),
+    ));
+    const controllerNodes = candidateControllersForDao(daoNode.id, serviceNodes, bizNodes);
+    const controllerCandidates = controllerNodes.length > 0 ? controllerNodes : [undefined];
+    for (const controllerNode of controllerCandidates) {
+      const route = formatRouteLabel(getControllerRequestMappings(controllerNode));
+      upsertCard({
+        id: `data-flow:${daoNode.id}:${controllerNode?.id ?? "unbound"}`,
+        type: "data_flow",
+        route,
+        routeValues: getControllerRequestMappings(controllerNode),
+        controllerId: controllerNode?.id,
+        controller: controllerNode?.displayName ?? controllerNode?.name,
+        service: uniqueStrings(serviceNodes.map((node) => node.displayName ?? node.name))[0],
+        biz: uniqueStrings(bizNodes.map((node) => node.displayName ?? node.name))[0],
+        dao: daoNode.displayName ?? daoNode.name,
+        mapper: undefined,
+        sql: undefined,
+        sqlCandidates: undefined,
+        sqlEvidenceLabel: undefined,
+        integration: daoExternalCalls.length > 0 ? daoExternalCalls : undefined,
+        evidenceLabel: bizNodes.length > 0 ? "controller/service -> biz -> dao dependency" : "controller/service -> dao dependency",
+        inferenceLevel: "inferred",
+        evidenceKinds: uniqueStrings([
+          controllerNode ? "controller-binding" : undefined,
+          serviceNodes.length > 0 ? "service-dao-edge" : undefined,
+          bizNodes.length > 0 ? "biz-dao-edge" : undefined,
+          daoExternalCalls.length > 0 ? "integration-call" : undefined,
+        ]),
+        hiddenByDefault: true,
+        confidence: serviceNodes.length > 0 || controllerNode ? "medium" : daoNode.confidence,
+      });
+    }
   }
 
   const queryEdges = snapshot.edges.filter((edge) => edge.type === "queries");
@@ -1171,53 +1615,89 @@ function collectDataFlowCards(snapshot: AnalysisSnapshot): DataFlowCard[] {
     if (!daoNode) {
       continue;
     }
-    const sqlEdge = snapshot.edges.find((candidate) => candidate.type === "contains" && candidate.from === edge.to);
-    const sqlNode = sqlEdge ? findNode(snapshot, sqlEdge.to) : undefined;
-    const serviceNodes = inboundDependencyNodes(daoNode.id, "service");
-    const controllerNode = chooseBestController(daoNode.id, serviceNodes);
-    const route = formatRouteLabel(getControllerRequestMappings(controllerNode));
-
-    upsertCard({
-      id: `data-flow:${daoNode.id}`,
-      type: "data_flow",
-      route,
-      routeValues: getControllerRequestMappings(controllerNode),
-      controllerId: controllerNode?.id,
-      controller: controllerNode?.displayName ?? controllerNode?.name,
-      service: uniqueStrings(serviceNodes.map((node) => node.displayName ?? node.name))[0],
-      dao: daoNode.displayName ?? daoNode.name,
-      mapper: mapperNode?.displayName ?? mapperNode?.name ?? edge.to,
-      sql: sqlNode?.displayName ?? sqlNode?.name,
-      evidenceLabel: "dao -> mapper query edge",
-      confidence: edge.confidence,
-    });
+    const sqlNodes = snapshot.edges
+      .filter((candidate) => candidate.type === "contains" && candidate.from === edge.to)
+      .map((candidate) => findNode(snapshot, candidate.to))
+      .filter((node): node is GraphNode => node?.type === "sql_statement");
+    const { serviceNodes, bizNodes } = inboundServiceNodesForDao(daoNode.id);
+    const daoSqlEntries = daoSqlIndex.get(daoNode.id) ?? [];
+    const daoSqlCandidates = uniqueStrings(daoSqlEntries.flatMap((entry) => [entry.statementId, entry.statementId.split(".").pop()]));
+    const daoMethodSummaries = getDaoMethodSummaries(daoNode);
+    const daoExternalCalls = uniqueStrings(daoMethodSummaries.flatMap((summary) =>
+      summary.externalCalls.map((call) => `${call.kind}: ${call.target}`),
+    ));
+    const controllerNodes = candidateControllersForDao(daoNode.id, serviceNodes, bizNodes);
+    const controllerCandidates = controllerNodes.length > 0 ? controllerNodes : [undefined];
+    for (const controllerNode of controllerCandidates) {
+      const route = formatRouteLabel(getControllerRequestMappings(controllerNode));
+      upsertCard({
+        id: `data-flow:${daoNode.id}:${controllerNode?.id ?? "unbound"}`,
+        type: "data_flow",
+        route,
+        routeValues: getControllerRequestMappings(controllerNode),
+        controllerId: controllerNode?.id,
+        controller: controllerNode?.displayName ?? controllerNode?.name,
+        service: uniqueStrings(serviceNodes.map((node) => node.displayName ?? node.name))[0],
+        biz: uniqueStrings(bizNodes.map((node) => node.displayName ?? node.name))[0],
+        dao: daoNode.displayName ?? daoNode.name,
+        mapper: mapperNode?.displayName ?? mapperNode?.name ?? edge.to,
+        sql: normalizeSqlCandidate(daoSqlCandidates[0] ?? sqlNodes[0]?.name ?? sqlNodes[0]?.displayName),
+        sqlCandidates: daoSqlCandidates.length > 0
+          ? daoSqlCandidates
+          : uniqueStrings(sqlNodes.flatMap((sqlNode) => [normalizeSqlCandidate(sqlNode.name), sqlNode.displayName])),
+        sqlEvidenceLabel: daoSqlEntries.length > 0
+          ? `dao method sql call: ${daoSqlEntries.map((entry) => `${entry.methodName} -> ${entry.statementId}`).join(" | ")}`
+          : "dao -> mapper query edge",
+        integration: daoExternalCalls.length > 0 ? daoExternalCalls : undefined,
+        evidenceLabel: "dao -> mapper query edge",
+        inferenceLevel: daoSqlEntries.length > 0 ? "confirmed" : "inferred",
+        evidenceKinds: uniqueStrings([
+          controllerNode ? "controller-binding" : undefined,
+          serviceNodes.length > 0 ? "service-dao-edge" : undefined,
+          bizNodes.length > 0 ? "biz-dao-edge" : undefined,
+          "dao-mapper-edge",
+          daoSqlEntries.length > 0 ? "sql-call" : undefined,
+          daoExternalCalls.length > 0 ? "integration-call" : undefined,
+        ]),
+        hiddenByDefault: daoSqlEntries.length === 0,
+        confidence: edge.confidence,
+      });
+    }
   }
 
   for (const daoNode of daoNodes) {
-    const existing = cards.get(`data-flow:${daoNode.id}`);
-    if (!existing || existing.mapper) {
-      continue;
-    }
-
     const fallback = pickFallbackMapper(daoNode);
     if (!fallback) {
       continue;
     }
-
-    upsertCard({
-      ...existing,
-      mapper: fallback.mapperNode.displayName ?? fallback.mapperNode.name,
-      sql: fallback.sqlNode?.displayName ?? fallback.sqlNode?.name,
-      evidenceLabel: "mapper fallback match",
-      confidence: "low",
-    });
+    const existingCards = Array.from(cards.values()).filter((card) => card.id.startsWith(`data-flow:${daoNode.id}:`) && !card.mapper);
+    for (const existing of existingCards) {
+      upsertCard({
+        ...existing,
+        mapper: fallback.mapperNode.displayName ?? fallback.mapperNode.name,
+        sql: normalizeSqlCandidate(fallback.sqlNodes[0]?.name ?? fallback.sqlNodes[0]?.displayName),
+        sqlCandidates: uniqueStrings(fallback.sqlNodes.flatMap((sqlNode) => [normalizeSqlCandidate(sqlNode.name), sqlNode.displayName])),
+        sqlEvidenceLabel: "mapper fallback match",
+        integration: existing.integration,
+        evidenceLabel: "mapper fallback match",
+        inferenceLevel: "heuristic",
+        evidenceKinds: uniqueStrings([...existing.evidenceKinds, "name-fallback"]),
+        hiddenByDefault: true,
+        confidence: "low",
+      });
+    }
   }
 
-  return Array.from(cards.values()).sort((left, right) => {
+  return Array.from(cards.values())
+    .map((card) => ({
+      ...card,
+      hiddenByDefault: shouldHideDataFlowCardByDefault(card),
+    }))
+    .sort((left, right) => {
     const leftKey = left.route ?? left.dao ?? left.service ?? left.id;
     const rightKey = right.route ?? right.dao ?? right.service ?? right.id;
     return leftKey.localeCompare(rightKey);
-  });
+    });
 }
 
 function collectPrimaryFlowCards(screenCards: ScreenCard[]): PrimaryFlowCard[] {
@@ -1333,6 +1813,7 @@ function buildRequestFlowCards(
   const screenFlowCards: RequestFlowCard[] = [];
   const apiFlowCards: RequestFlowCard[] = [];
   const flowDetails: FlowDetailCard[] = [];
+  const inboundUiActionCounts = collectInboundUiActionCounts(snapshot);
 
   const groupedScreenCards = new Map<string, ScreenCard[]>();
   for (const card of screenCards) {
@@ -1349,23 +1830,65 @@ function buildRequestFlowCards(
     if (!card) {
       continue;
     }
-    const dataMatches = findMatchingDataFlowCards(card, dataFlowCards);
-    const primaryDataMatch = dataMatches[0];
+    const controllerDataMatches = findMatchingDataFlowCards(card, dataFlowCards);
     const isScreenFlow = Boolean(card.view || card.layout);
     const viewVariants = uniqueStrings(group.map((item) => item.view));
     const layoutVariants = uniqueStrings(group.map((item) => item.layout));
     const variantCount = Math.max(viewVariants.length, layoutVariants.length, group.length);
     const detailId = `detail:${card.id}`;
     const routeTitle = card.route ?? card.title;
+    const internalCallerCount = card.routeValues.reduce((count, route) => count + (inboundUiActionCounts.get(route) ?? 0), 0);
     const controllerNode = card.controllerId ? findNode(snapshot, card.controllerId) : undefined;
     const resolution = getControllerResolutionInfo(controllerNode);
     const handlerServiceCalls = getHandlerServiceCalls(controllerNode, card.action);
+    const handlerResponseBody = getHandlerResponseBody(controllerNode, card.action);
+    const handlerResponseMetadata = getHandlerResponseMetadata(controllerNode, card.action);
     const calledServices = uniqueStrings(
       handlerServiceCalls
         .filter((call) => call.targetType === "service")
         .map((call) => shortTypeName(call.targetName)),
     );
-    const displayedService = calledServices[0] ?? primaryDataMatch?.service;
+    const calledMethodNames = uniqueStrings(handlerServiceCalls.map((call) => call.methodName));
+    const fallbackService = controllerDataMatches[0]?.service;
+    const displayedService = calledServices[0] ?? fallbackService;
+    const serviceStem = normalizeSymbolStem(displayedService);
+    const serviceDataMatches = serviceStem
+      ? dataFlowCards.filter((match) =>
+          normalizeSymbolStem(match.service) === serviceStem ||
+          normalizeSymbolStem(match.biz) === serviceStem,
+        )
+      : [];
+    const dataMatches = uniqueStrings([
+      ...controllerDataMatches.map((match) => match.id),
+      ...serviceDataMatches.map((match) => match.id),
+    ]).map((id) => dataFlowCards.find((match) => match.id === id)).filter((match): match is DataFlowCard => Boolean(match));
+    const scoreDataMatch = (match: DataFlowCard): number => (
+      (match.controllerId === card.controllerId ? 5 : 0) +
+      (match.routeValues.includes(card.route ?? "") ? 3 : 0) +
+      (normalizeSymbolStem(match.service) === normalizeSymbolStem(displayedService) ? 4 : 0) +
+      (normalizeSymbolStem(match.biz) === normalizeSymbolStem(displayedService) ? 3 : 0) +
+      (pickBestSqlCandidate(match.sqlCandidates, calledMethodNames) ? 6 : 0) +
+      (match.integration && match.integration.length > 0 ? 5 : 0) +
+      (match.inferenceLevel === "confirmed" ? 4 : match.inferenceLevel === "inferred" ? 2 : 0) +
+      (match.biz ? 2 : 0) +
+      (match.dao ? 3 : 0) +
+      (match.mapper ? 2 : 0) +
+      (match.sql ? 2 : 0)
+    );
+    const rankedDataMatches = [...dataMatches].sort((left, right) => scoreDataMatch(right) - scoreDataMatch(left));
+    const strongestDataScore = rankedDataMatches[0] ? scoreDataMatch(rankedDataMatches[0]) : 0;
+    const visibleDataMatches = rankedDataMatches.filter((match) => scoreDataMatch(match) >= Math.max(strongestDataScore - 4, 6));
+    const primaryDataMatch = displayedService
+      ? rankedDataMatches.find((match) =>
+          normalizeSymbolStem(match.service) === normalizeSymbolStem(displayedService) ||
+          normalizeSymbolStem(match.biz) === normalizeSymbolStem(displayedService),
+        ) ?? rankedDataMatches[0]
+      : rankedDataMatches[0];
+    const displayedBiz = primaryDataMatch?.biz;
+    const displayedSql = pickBestSqlCandidate(
+      primaryDataMatch?.sqlCandidates ?? (primaryDataMatch?.sql ? [primaryDataMatch.sql] : []),
+      calledMethodNames,
+    ) ?? normalizeSqlCandidate(primaryDataMatch?.sql);
     const serviceEvidence = handlerServiceCalls.length > 0
       ? handlerServiceCalls
         .filter((call) => call.targetType === "service")
@@ -1375,8 +1898,40 @@ function buildRequestFlowCards(
     const serviceNode = displayedService
       ? snapshot.nodes.find((node) => node.type === "service" && (node.displayName === displayedService || node.name === displayedService))
       : undefined;
-    const daoEvidence = describeDependencyEvidence(snapshot, serviceNode?.id, primaryDataMatch?.dao);
-    const logicalViewNames = isScreenFlow ? getControllerLogicalViewNames(controllerNode, card.action, card.view) : [];
+    const bizNode = displayedBiz
+      ? snapshot.nodes.find((node) => node.type === "biz" && (node.displayName === displayedBiz || node.name === displayedBiz))
+      : undefined;
+    const serviceMethodSummaries = getDaoMethodSummaries(serviceNode);
+    const bizMethodSummaries = getDaoMethodSummaries(bizNode);
+    const matchingServiceSummary = serviceMethodSummaries.find((summary) =>
+      calledMethodNames.includes(summary.methodName) ||
+      calledMethodNames.includes(summary.dependencyCalls[0]?.methodName ?? ""),
+    );
+    const serviceToBizEvidence = displayedBiz
+      ? matchingServiceSummary?.dependencyCalls.find((call) =>
+          call.targetType === "biz" &&
+          normalizeSymbolStem(shortTypeName(call.targetName)) === normalizeSymbolStem(displayedBiz),
+        )
+        ? `${displayedService}.${matchingServiceSummary.methodName}() -> ${displayedBiz}.${matchingServiceSummary.dependencyCalls.find((call) =>
+            call.targetType === "biz" &&
+            normalizeSymbolStem(shortTypeName(call.targetName)) === normalizeSymbolStem(displayedBiz),
+          )?.methodName}()`
+        : describeDependencyEvidence(snapshot, serviceNode?.id, displayedBiz)
+      : undefined;
+    const matchingBizSummary = bizMethodSummaries.find((summary) =>
+      calledMethodNames.includes(summary.methodName) ||
+      calledMethodNames.includes(summary.dependencyCalls[0]?.methodName ?? ""),
+    );
+    const daoEvidence = matchingBizSummary?.dependencyCalls.find((call) =>
+      call.targetType === "dao" &&
+      normalizeSymbolStem(shortTypeName(call.targetName)) === normalizeSymbolStem(primaryDataMatch?.dao),
+    )
+      ? `${displayedBiz ?? displayedService}.${matchingBizSummary.methodName}() -> ${primaryDataMatch?.dao}.${matchingBizSummary.dependencyCalls.find((call) =>
+          call.targetType === "dao" &&
+          normalizeSymbolStem(shortTypeName(call.targetName)) === normalizeSymbolStem(primaryDataMatch?.dao),
+        )?.methodName}()`
+      : describeDependencyEvidence(snapshot, bizNode?.id ?? serviceNode?.id, primaryDataMatch?.dao);
+    const logicalViewNames = getControllerLogicalViewNames(controllerNode, card.action, card.view);
     const viewResolvers = isScreenFlow
       ? collectViewResolverInfo(snapshot, [card.dispatcherConfig, resolution.configPath].filter(Boolean) as string[])
       : [];
@@ -1389,7 +1944,34 @@ function buildRequestFlowCards(
       : undefined;
     const title = isScreenFlow
       ? `${routeTitle} -> ${viewSummary}`
-      : `${routeTitle} -> API response`;
+      : `${routeTitle} -> Non-screen response`;
+    const responseTags = isScreenFlow
+      ? []
+      : inferNonScreenResponseTags({
+          route: card.route,
+          action: card.action,
+          requestMappings: card.routeValues,
+          handlerMappingPatterns: resolution.handlerMappingPatterns,
+          responseBody: handlerResponseBody,
+          produces: handlerResponseMetadata.produces,
+          contentTypes: handlerResponseMetadata.contentTypes,
+          internalCallerCount,
+        });
+    const responseKind = isScreenFlow
+      ? undefined
+      : inferNonScreenResponseKind({
+          route: card.route,
+          action: card.action,
+          requestMappings: card.routeValues,
+          handlerMappingPatterns: resolution.handlerMappingPatterns,
+          logicalViewNames,
+          responseBody: handlerResponseBody,
+          responseTags,
+          produces: handlerResponseMetadata.produces,
+          contentTypes: handlerResponseMetadata.contentTypes,
+          redirectTargets: handlerResponseMetadata.redirectTargets,
+          fileResponseHints: handlerResponseMetadata.fileResponseHints,
+        });
     const requestFlowCard: RequestFlowCard = {
       id: card.id,
       type: isScreenFlow ? "screen_flow" : "api_flow",
@@ -1409,15 +1991,19 @@ function buildRequestFlowCards(
       methodResolverRef: resolution.methodResolverRef,
       action: card.action,
       service: displayedService,
+      biz: displayedBiz,
       dao: primaryDataMatch?.dao,
       mapper: primaryDataMatch?.mapper,
-      sql: primaryDataMatch?.sql,
+      sql: displayedSql,
+      integration: primaryDataMatch?.integration,
       view: card.view,
       layout: card.layout,
       viewVariants,
       layoutVariants,
       variantCount,
-      responseType: isScreenFlow ? undefined : "Action / API response",
+      responseType: isScreenFlow ? undefined : "Non-screen response",
+      responseKind,
+      responseTags,
       logicalViewNames,
       resolvedViewPaths,
       viewResolverSummary,
@@ -1457,25 +2043,36 @@ function buildRequestFlowCards(
           `business path: ${[
             card.controller ?? "-",
             displayedService ?? "-",
+            displayedBiz ?? "-",
             primaryDataMatch?.dao ?? "-",
           ].join(" -> ")}`,
           `service: ${displayedService ?? "-"}`,
+          `biz: ${displayedBiz ?? "-"}`,
           `controller -> service evidence: ${serviceEvidence ?? "-"}`,
+          `service -> biz evidence: ${serviceToBizEvidence ?? "-"}`,
           `dao: ${primaryDataMatch?.dao ?? "-"}`,
-          `service -> dao evidence: ${daoEvidence ?? "-"}`,
+          `${displayedBiz ? "biz -> dao evidence" : "service -> dao evidence"}: ${daoEvidence ?? "-"}`,
+          `sql evidence: ${primaryDataMatch?.sqlEvidenceLabel ?? "-"}`,
+          `inference level: ${primaryDataMatch?.inferenceLevel ?? "-"}`,
+          `evidence kinds: ${primaryDataMatch?.evidenceKinds.join(" | ") ?? "-"}`,
+          `integration: ${primaryDataMatch?.integration?.join(" | ") ?? "-"}`,
           `shared data summary: ${card.relatedDataSummary.join(" | ") || "-"}`,
         ],
       },
       {
         key: "detailDataAccess",
-        lines: dataMatches.length > 0
-          ? dataMatches.map((match) =>
+        lines: visibleDataMatches.length > 0
+          ? visibleDataMatches.map((match) =>
               [
                 `controller=${match.controller ?? "-"}`,
                 `service=${match.service ?? "-"}`,
                 `dao=${match.dao ?? "-"}`,
                 `mapper=${match.mapper ?? "-"}`,
-                `sql=${match.sql ?? "-"}`,
+                `sql=${pickBestSqlCandidate(match.sqlCandidates ?? (match.sql ? [match.sql] : []), calledMethodNames) ?? normalizeSqlCandidate(match.sql) ?? "-"}`,
+                `level=${match.inferenceLevel}`,
+                `evidenceKinds=${match.evidenceKinds.join(", ") || "-"}`,
+                `integration=${match.integration?.join(" ; ") ?? "-"}`,
+                `evidence=${match.sqlEvidenceLabel ?? match.evidenceLabel}`,
               ].join(" | "),
             )
           : ["No related data flow identified"],
@@ -1494,9 +2091,13 @@ function buildRequestFlowCards(
               "result: rendered screen",
             ]
           : [
-              `response type: Action / API response`,
+              `response type: Non-screen response`,
+              `response kind: ${responseKind ?? "unknown"}`,
+              `content types: ${handlerResponseMetadata.contentTypes.join(" | ") || handlerResponseMetadata.produces.join(" | ") || "-"}`,
+              `redirect target: ${handlerResponseMetadata.redirectTargets.join(" | ") || "-"}`,
+              `file response hints: ${handlerResponseMetadata.fileResponseHints.join(" | ") || "-"}`,
               `view/layout: -`,
-              "result: API or action response",
+              "result: non-screen response",
             ],
       },
       {
@@ -1514,11 +2115,15 @@ function buildRequestFlowCards(
       title,
       summary: isScreenFlow
         ? `${routeTitle} -> ${card.controller ?? "-"} -> ${displayedService ?? "-"} -> ${primaryDataMatch?.dao ?? "-"} -> ${shortenPath(card.view) ?? "screen"}`
-        : `${routeTitle} -> ${card.controller ?? "-"} -> ${displayedService ?? "-"} -> ${primaryDataMatch?.dao ?? "-"} -> API response`,
+        : `${routeTitle} -> ${card.controller ?? "-"} -> ${displayedService ?? "-"} -> ${primaryDataMatch?.dao ?? "-"} -> Non-screen response`,
       confidence: card.confidence,
+      responseTags,
       relatedDataSearchTerm: card.relatedDataSearchTerm,
       sections,
     };
+    if (responseKind) {
+      detailCard.responseKind = responseKind;
+    }
     if (isScreenFlow) {
       detailCard.viewPaths = viewVariants;
     }
@@ -1567,6 +2172,23 @@ function collectViewUiActions(snapshot: AnalysisSnapshot, viewPaths: string[]): 
   }
 
   return Array.from(actions.values());
+}
+
+function collectInboundUiActionCounts(snapshot: AnalysisSnapshot): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const node of snapshot.nodes) {
+    if (node.type !== "view" || !Array.isArray(node.metadata?.uiActions)) {
+      continue;
+    }
+    for (const action of node.metadata.uiActions as Array<Record<string, unknown>>) {
+      const target = typeof action.target === "string" ? action.target : undefined;
+      if (!target) {
+        continue;
+      }
+      counts.set(target, (counts.get(target) ?? 0) + 1);
+    }
+  }
+  return counts;
 }
 
 function enrichFlowDetailsWithBrowserEntry(
@@ -1900,6 +2522,134 @@ function collectLibraryAnchorCards(snapshot: AnalysisSnapshot): Array<{
     .slice(0, 3);
 }
 
+function collectModuleProfileCards(
+  snapshot: AnalysisSnapshot,
+  screenFlowCards: RequestFlowCard[],
+  apiFlowCards: RequestFlowCard[],
+): ModuleProfileCard[] {
+  const isApiStyleRoute = (route: string): boolean =>
+    /(^|\/)(api|openapi|galaxyapi)(\/|$)|\/v[0-9]+(\/|$)|\.json($|[/?])/i.test(route);
+  const isApiConfigPath = (path: string): boolean =>
+    /(applicationContext(Api|Auth|Search|Bixby)|openapi|swagger)/i.test(path);
+  const grouped = new Map<string, GraphNode[]>();
+
+  for (const node of snapshot.nodes) {
+    const moduleKey = extractModuleKey(node.path);
+    if (!moduleKey || extractSharedLibraryName(node.path)) {
+      continue;
+    }
+    const existing = grouped.get(moduleKey) ?? [];
+    existing.push(node);
+    grouped.set(moduleKey, existing);
+  }
+
+  return Array.from(grouped.entries())
+    .map(([modulePath, nodes]) => {
+      const screenFlows = screenFlowCards.filter((flow) => extractModuleKey(flow.controllerPath) === modulePath);
+      const nonScreenFlows = apiFlowCards.filter((flow) => extractModuleKey(flow.controllerPath) === modulePath);
+      const controllerNodes = nodes.filter((node) => node.type === "controller");
+      const controllerHandlers = controllerNodes.flatMap((node) => getControllerRequestHandlers(node));
+      const controllerCount = nodes.filter((node) => node.type === "controller").length;
+      const serviceCount = nodes.filter((node) => node.type === "service").length;
+      const configCount = nodes.filter((node) => node.type === "config").length;
+      const apiConfigCount = nodes.filter((node) => typeof node.path === "string" && isApiConfigPath(node.path)).length;
+      const responseBodyHandlerCount = controllerHandlers.filter((handler) => handler.responseBody).length;
+      const totalHandlerCount = controllerHandlers.length;
+      const sharedLibraryCount = uniqueStrings(nodes.map((node) => extractSharedLibraryName(node.path))).length;
+      const moduleRoutes = uniqueStrings([
+        ...screenFlows.flatMap((flow) => flow.routeValues),
+        ...nonScreenFlows.flatMap((flow) => flow.routeValues),
+        ...controllerHandlers.flatMap((handler) => handler.requestMappings),
+      ]);
+      const apiLikeRoutes = moduleRoutes.filter((route) => isApiStyleRoute(route));
+      const routeHints = moduleRoutes.slice(0, 4);
+      const hasApiStyleRoutes = apiLikeRoutes.length > 0;
+      const apiRouteRatio = moduleRoutes.length > 0 ? apiLikeRoutes.length / moduleRoutes.length : 0;
+      const responseBodyRatio = totalHandlerCount > 0 ? responseBodyHandlerCount / totalHandlerCount : 0;
+      const hasLegacyWebSignals = nodes.some((node) => typeof node.path === "string" && /\/WebContent\/|\/WEB-INF\/jsp\//.test(node.path));
+      const responseKindCounts = nonScreenFlows.reduce<Record<string, number>>((counts, flow) => {
+        const key = flow.responseKind ?? "unknown";
+        counts[key] = (counts[key] ?? 0) + 1;
+        return counts;
+      }, {});
+      const jsonFlowCount = responseKindCounts.json ?? 0;
+      const fileFlowCount = responseKindCounts.file ?? 0;
+      const redirectFlowCount = responseKindCounts.redirect ?? 0;
+      const actionFlowCount = responseKindCounts.action ?? 0;
+      const apiStyleNonScreenRatio = nonScreenFlows.length > 0 ? (jsonFlowCount + fileFlowCount) / nonScreenFlows.length : 0;
+      const apiScore = Math.min(5,
+        (apiLikeRoutes.length >= 3 ? 1 : 0) +
+        (apiRouteRatio >= 0.2 ? 1 : 0) +
+        (responseBodyRatio >= 0.2 ? 1 : 0) +
+        (apiConfigCount >= 2 ? 1 : 0) +
+        (apiStyleNonScreenRatio >= 0.45 ? 1 : 0),
+      );
+      const webMvcScore = Math.min(5,
+        (hasLegacyWebSignals ? 2 : 0) +
+        (screenFlows.length > 0 ? 2 : 0) +
+        (screenFlows.length >= nonScreenFlows.length ? 1 : 0),
+      );
+      const internalActionScore = Math.min(5,
+        (nonScreenFlows.length > 0 && (actionFlowCount / nonScreenFlows.length) >= 0.5 ? 2 : 0) +
+        (actionFlowCount >= fileFlowCount + jsonFlowCount ? 2 : 0) +
+        (responseBodyRatio < 0.15 ? 1 : 0),
+      );
+
+      let profileLabel = "mixed web app";
+      if (nonScreenFlows.length > 0 && screenFlows.length === 0 && apiScore >= 3 && webMvcScore <= 2) {
+        profileLabel = "API-centric app";
+      } else if (apiScore >= 3 && webMvcScore >= 3) {
+        profileLabel = "API-centric mixed app";
+      } else if (webMvcScore >= 4 && apiScore <= 2) {
+        profileLabel = "MVC-heavy web app";
+      } else if (screenFlows.length === 0 && nonScreenFlows.length > 0 && internalActionScore >= 3) {
+        profileLabel = "non-screen endpoint app";
+      }
+
+      const evidence = uniqueStrings([
+        `screen flows: ${screenFlows.length}`,
+        `non-screen flows: ${nonScreenFlows.length}`,
+        `profile scores: api=${apiScore}, web=${webMvcScore}, internal-action=${internalActionScore}`,
+        nonScreenFlows.length > 0 ? `response kinds: json=${jsonFlowCount}, file=${fileFlowCount}, redirect=${redirectFlowCount}, action=${actionFlowCount}` : undefined,
+        hasApiStyleRoutes ? `api-style routes: ${routeHints.join(", ")}` : undefined,
+        apiLikeRoutes.length > 0 ? `api-like routes observed: ${apiLikeRoutes.length}/${moduleRoutes.length}` : undefined,
+        totalHandlerCount > 0 ? `responseBody handlers: ${responseBodyHandlerCount}/${totalHandlerCount}` : undefined,
+        apiConfigCount > 0 ? `api configs: ${apiConfigCount}` : undefined,
+        hasLegacyWebSignals ? "web mvc signals: WebContent/JSP detected" : undefined,
+        controllerCount > 0 ? `controllers: ${controllerCount}` : undefined,
+        serviceCount > 0 ? `services: ${serviceCount}` : undefined,
+        configCount > 0 ? `configs: ${configCount}` : undefined,
+      ]);
+
+      return {
+        id: `module-profile:${modulePath}`,
+        type: "module_profile",
+        title: modulePath.split("/").pop() ?? modulePath,
+        modulePath,
+        profileLabel,
+        evidence,
+        screenFlowCount: screenFlows.length,
+        nonScreenFlowCount: nonScreenFlows.length,
+        controllerCount,
+        serviceCount,
+        configCount,
+        sharedLibraryCount,
+        responseKindCounts,
+        profileScores: {
+          api: apiScore,
+          webMvc: webMvcScore,
+          internalAction: internalActionScore,
+        },
+      };
+    })
+    .filter((card) => card.controllerCount > 0 || card.screenFlowCount > 0 || card.nonScreenFlowCount > 0)
+    .sort((left, right) =>
+      (right.screenFlowCount + right.nonScreenFlowCount + right.controllerCount) -
+      (left.screenFlowCount + left.nonScreenFlowCount + left.controllerCount),
+    )
+    .slice(0, 8);
+}
+
 export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string {
   const title = `code2me report - ${snapshot.projectId}`;
   const dataFlowCards = collectDataFlowCards(snapshot);
@@ -1941,6 +2691,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
     screenFlowCards,
     apiFlowCards,
     flowDetails: enrichedFlowDetails,
+    moduleProfileCards: collectModuleProfileCards(snapshot, screenFlowCards, apiFlowCards),
     libraryAnchorCards: collectLibraryAnchorCards(snapshot),
     largeSnapshotMode,
     rawSnapshotPath: "snapshot.json",
@@ -1991,7 +2742,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       startHere: "시작점 / Start Here",
       frameworkFlow: "프레임워크 흐름 / Framework Flow",
       screenFlow: "화면 흐름 / Screen Flows",
-      apiFlow: "API 흐름 / API Flows",
+      apiFlow: "논스크린 흐름 / Non-screen Flows",
       flowDetail: "흐름 상세 / Flow Details",
       supporting: "아키텍처 맥락 / Architecture Context",
       explore: "탐색 / Explore",
@@ -2000,14 +2751,14 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       projectSummary: "프로젝트 요약",
       howToRead: "어떻게 보면 되나",
       startHereGuide1: "먼저 Framework Flow에서 web.xml 부터 프론트 컨트롤러 설정 흐름을 본다.",
-      startHereGuide2: "그다음 Screen Flows 또는 API Flows에서 요청 흐름을 고른다.",
+      startHereGuide2: "그다음 Screen Flows 또는 Non-screen Flows에서 요청 흐름을 고른다.",
       startHereGuide3: "각 카드의 흐름 상세 보기에서 Controller -> Service -> DAO -> View/Response를 따라간다.",
       representativeScreenFlows: "대표 화면 흐름",
-      representativeApiFlows: "대표 API 흐름",
+      representativeApiFlows: "대표 논스크린 흐름",
       bootstrapSummary: "부트스트랩 요약",
       keyFlows: "핵심 흐름",
       screenCount: "화면 흐름 수",
-      apiCount: "API 흐름 수",
+      apiCount: "논스크린 흐름 수",
       dataCount: "데이터 흐름 수",
       libraryAnchor: "공통 모듈 허브",
       libraryClasses: "관련 클래스",
@@ -2015,12 +2766,33 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       libraryServices: "관련 서비스",
       libraryDaos: "관련 DAO",
       topControllers: "주요 연결 컨트롤러",
-      relatedData: "데이터 접근 축",
+      relatedData: "추정 데이터 경로",
       sharedModules: "공통 모듈",
+      moduleProfiles: "모듈 성격",
+      moduleProfileLabel: "모듈 프로파일",
+      moduleEvidence: "판단 신호",
       runtimeContext: "런타임 맥락",
-      runtimeContextGuide: "이 탭은 현재 흐름 뒤의 데이터 축과 공통 모듈을 요약한다. 전체 구조 인벤토리는 Explore에서 본다.",
-      possibleBackendPath: "가능성 있는 백엔드 축",
-      dataFlowMeaning: "이 요청들이 뒤에서 공통으로 보이는 데이터 접근 축 후보를 요약한다.",
+      runtimeContextGuide: "이 탭은 현재 흐름 뒤의 추정 데이터 경로와 공통 모듈을 요약한다. 전체 구조 인벤토리는 Explore에서 본다.",
+      possibleBackendPath: "추정 경로",
+      dataFlowMeaning: "이 카드는 이 요청들 뒤에서 공통으로 보이는 추정 데이터 경로를 요약한다.",
+      inferredWarning: "정적 분석 기반 추정 결과이며 실제 실행 경로와 다를 수 있다.",
+      inferenceLevelLabel: "추정 등급",
+      evidenceKindsLabel: "근거 종류",
+      hiddenCandidateReason: "약한 근거 또는 fallback 기반 후보라서 기본적으로 숨겨진다.",
+      showHiddenDataPaths: "숨겨진 추정 후보 보기",
+      hideHiddenDataPaths: "숨겨진 추정 후보 숨기기",
+      hiddenCandidatesSummary: "기본 숨김 후보",
+      inferenceLevelConfirmed: "근거 강함",
+      inferenceLevelInferred: "추정",
+      inferenceLevelHeuristic: "휴리스틱",
+      evidenceKindControllerServiceEdge: "컨트롤러-서비스 의존",
+      evidenceKindControllerBinding: "요청-컨트롤러 연결",
+      evidenceKindServiceDaoEdge: "서비스-DAO 의존",
+      evidenceKindBizDaoEdge: "비즈-DAO 의존",
+      evidenceKindDaoMapperEdge: "DAO-매퍼 직접 연결",
+      evidenceKindSqlCall: "DAO SQL 호출",
+      evidenceKindIntegrationCall: "외부 연동 호출",
+      evidenceKindNameFallback: "이름 기반 fallback",
       linkedRequests: "연결된 요청",
       requestList: "요청 URL 목록",
       evidenceBasis: "판단 근거",
@@ -2033,6 +2805,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       configsCount: "핵심 설정 수",
       viewInExplore: "Explore에서 전체 구조 보기",
       service: "서비스",
+      biz: "비즈",
       openDataFlow: "데이터 흐름 보기",
       openFlowDetail: "흐름 상세 보기",
       showAllRoutes: "전체 URL 보기",
@@ -2053,9 +2826,21 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       view: "화면",
       layout: "레이아웃",
       response: "응답",
+      responseKindLabel: "응답 종류",
+      responseKindJson: "JSON",
+      responseKindFile: "파일",
+      responseKindRedirect: "리다이렉트",
+      responseKindAction: "액션",
+      responseKindUnknown: "미확인",
       dao: "DAO",
+      integration: "외부 연동",
       mapper: "매퍼",
       sql: "SQL",
+      responseTagsLabel: "응답 태그",
+      downloadTag: "다운로드",
+      ajaxTag: "AJAX",
+      internalUiLinkedTag: "화면 내부 연결",
+      externalFacingCandidateTag: "외부 연동 후보",
       path: "경로",
       confidence: "신뢰도",
       modules: "모듈",
@@ -2065,7 +2850,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       largeSnapshotNotice: "대형 결과라서 먼저 일부만 보여준다. 검색/필터를 쓰거나 상세 페이지로 이동할 수 있다.",
       openSnapshotFile: "snapshot.json 열기",
       screenFlowEmpty: "화면 흐름이 아직 식별되지 않았습니다",
-      apiFlowEmpty: "API 흐름이 아직 식별되지 않았습니다",
+      apiFlowEmpty: "논스크린 흐름이 아직 식별되지 않았습니다",
       frameworkFlowEmpty: "프레임워크 흐름이 아직 식별되지 않았습니다",
       flowDetailEmpty: "먼저 흐름 하나를 선택하면 상세가 표시됩니다",
       structureEmpty: "구조 항목이 없습니다",
@@ -2114,7 +2899,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       startHere: "Start Here",
       frameworkFlow: "Framework Flow",
       screenFlow: "Screen Flows",
-      apiFlow: "API Flows",
+      apiFlow: "Non-screen Flows",
       flowDetail: "Flow Details",
       supporting: "Architecture Context",
       explore: "Explore",
@@ -2123,14 +2908,14 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       projectSummary: "Project Summary",
       howToRead: "How to read this report",
       startHereGuide1: "Start with Framework Flow to see how web.xml and the front controller route requests.",
-      startHereGuide2: "Then choose a screen flow or an API flow.",
+      startHereGuide2: "Then choose a screen flow or a non-screen flow.",
       startHereGuide3: "Open flow details to follow Controller -> Service -> DAO -> View/Response.",
       representativeScreenFlows: "Representative Screen Flows",
-      representativeApiFlows: "Representative API Flows",
+      representativeApiFlows: "Representative Non-screen Flows",
       bootstrapSummary: "Bootstrap Summary",
       keyFlows: "Key Flows",
       screenCount: "Screen flows",
-      apiCount: "API flows",
+      apiCount: "Non-screen flows",
       dataCount: "Data flows",
       libraryAnchor: "Shared Module Hubs",
       libraryClasses: "Classes",
@@ -2138,12 +2923,33 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       libraryServices: "Services",
       libraryDaos: "DAOs",
       topControllers: "Top Controllers",
-      relatedData: "Data Access Backbone",
+      relatedData: "Inferred Data Paths",
       sharedModules: "Shared Modules",
+      moduleProfiles: "Module Profiles",
+      moduleProfileLabel: "Module profile",
+      moduleEvidence: "Evidence",
       runtimeContext: "Runtime Context",
-      runtimeContextGuide: "This tab summarizes the data backbone and shared modules behind the current flows. Use Explore for the full structure inventory.",
-      possibleBackendPath: "Possible backend path",
-      dataFlowMeaning: "This card summarizes the backend data path that these requests appear to share.",
+      runtimeContextGuide: "This tab summarizes inferred data paths and shared modules behind the current flows. Use Explore for the full structure inventory.",
+      possibleBackendPath: "Inferred path",
+      dataFlowMeaning: "This card summarizes an inferred data path that these requests appear to share.",
+      inferredWarning: "This is an inferred result from static analysis and may differ from the actual runtime path.",
+      inferenceLevelLabel: "Inference level",
+      evidenceKindsLabel: "Evidence kinds",
+      hiddenCandidateReason: "Hidden by default because the evidence is weak or relies on fallback matching.",
+      showHiddenDataPaths: "Show hidden inferred candidates",
+      hideHiddenDataPaths: "Hide hidden inferred candidates",
+      hiddenCandidatesSummary: "Hidden candidates",
+      inferenceLevelConfirmed: "Confirmed",
+      inferenceLevelInferred: "Inferred",
+      inferenceLevelHeuristic: "Heuristic",
+      evidenceKindControllerServiceEdge: "controller-service dependency",
+      evidenceKindControllerBinding: "request-controller binding",
+      evidenceKindServiceDaoEdge: "service-dao dependency",
+      evidenceKindBizDaoEdge: "biz-dao dependency",
+      evidenceKindDaoMapperEdge: "dao-mapper direct edge",
+      evidenceKindSqlCall: "dao sql call",
+      evidenceKindIntegrationCall: "integration call",
+      evidenceKindNameFallback: "name-based fallback",
       linkedRequests: "Linked Requests",
       requestList: "Request URLs",
       evidenceBasis: "Evidence Basis",
@@ -2156,6 +2962,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       configsCount: "Key Configs",
       viewInExplore: "View full structure in Explore",
       service: "Service",
+      biz: "Biz",
       openDataFlow: "Open Data Flow",
       openFlowDetail: "Open Flow Details",
       showAllRoutes: "Show all URLs",
@@ -2176,9 +2983,21 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       view: "View",
       layout: "Layout",
       response: "Response",
+      responseKindLabel: "Response kind",
+      responseKindJson: "JSON",
+      responseKindFile: "File",
+      responseKindRedirect: "Redirect",
+      responseKindAction: "Action",
+      responseKindUnknown: "Unknown",
       dao: "DAO",
+      integration: "Integration",
       mapper: "Mapper",
       sql: "SQL",
+      responseTagsLabel: "Response tags",
+      downloadTag: "Download",
+      ajaxTag: "Ajax",
+      internalUiLinkedTag: "Screen-linked",
+      externalFacingCandidateTag: "External-facing candidate",
       path: "Path",
       confidence: "Confidence",
       modules: "Modules",
@@ -2188,7 +3007,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
       largeSnapshotNotice: "Large result detected. Showing a preview first. Use search/filter or the detail pages.",
       openSnapshotFile: "Open snapshot.json",
       screenFlowEmpty: "No screen flow identified yet",
-      apiFlowEmpty: "No API flow identified yet",
+      apiFlowEmpty: "No non-screen flow identified yet",
       frameworkFlowEmpty: "No framework flow identified yet",
       flowDetailEmpty: "Select a flow first to see the detail view",
       structureEmpty: "No structural items",
@@ -2250,6 +3069,8 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
     "    .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }",
     "    .wide-list { display: grid; gap: 12px; }",
     "    .item { padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: white; }",
+    "    .item.supporting { background: #fcfaf5; border-style: dashed; }",
+    "    .item.supporting.heuristic { background: #fff8ef; border-color: #efc38a; }",
     "    .item.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: #f7fcf8; }",
     "    .item.wide { width: 100%; }",
     "    .item-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }",
@@ -2265,7 +3086,13 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
     "    .pill.conf-high { background: var(--accent-soft); color: var(--accent); }",
     "    .pill.conf-medium { background: #e0ecff; color: #1d4ed8; }",
     "    .pill.conf-low { background: var(--warn-soft); color: var(--warn); }",
+    "    .pill.tag-confirmed { background: #dff3e5; color: #14532d; }",
+    "    .pill.tag-inferred { background: #e0ecff; color: #1d4ed8; }",
+    "    .pill.tag-heuristic { background: #ffedd5; color: #9a3412; }",
     "    .secondary { color: var(--muted); font-size: 14px; word-break: break-word; }",
+    "    .secondary.warning { color: #7c4a12; }",
+    "    .supporting-note { margin-bottom: 12px; padding: 12px 14px; border: 1px solid #efc38a; border-radius: 14px; background: #fff6e8; color: #7c4a12; }",
+    "    .supporting-note strong { display: block; margin-bottom: 4px; }",
     "    .details { margin-top: 10px; }",
     "    .details summary { cursor: pointer; color: var(--accent); font-size: 13px; }",
     "    .details-body { margin-top: 8px; display: grid; gap: 6px; }",
@@ -2347,7 +3174,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
     '    const savedLanguage = localStorage.getItem("code2me-lang");',
     '    const savedViewMode = localStorage.getItem("code2me-view-mode");',
     '    const browserLanguage = (navigator.language || "en").toLowerCase().startsWith("ko") ? "ko" : "en";',
-    '    const state = { tab: "start-here", search: "", type: "", confidence: "", lang: savedLanguage || browserLanguage, viewMode: savedViewMode || "list", selectedFlowId: report.flowDetails[0]?.id || "" };',
+    '    const state = { tab: "start-here", search: "", type: "", confidence: "", lang: savedLanguage || browserLanguage, viewMode: savedViewMode || "list", selectedFlowId: report.flowDetails[0]?.id || "", showHiddenDataPaths: false };',
     '    const searchCache = new Map();',
     '    const panelCache = new Map();',
     '    const tabs = Array.from(document.querySelectorAll(".tab"));',
@@ -2361,17 +3188,21 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
     '    function esc(value) { return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll(\'"\', "&quot;").replaceAll("\'", "&#39;"); }',
     '    function t(key) { return translations[state.lang][key] || key; }',
     '    function confidenceLabel(value) { return value ? t(value) : ""; }',
+    '    function inferenceLevelLabel(value) { if (value === "confirmed") return t("inferenceLevelConfirmed"); if (value === "inferred") return t("inferenceLevelInferred"); if (value === "heuristic") return t("inferenceLevelHeuristic"); return value || ""; }',
+    '    function evidenceKindLabel(value) { if (value === "controller-service-edge") return t("evidenceKindControllerServiceEdge"); if (value === "controller-binding") return t("evidenceKindControllerBinding"); if (value === "service-dao-edge") return t("evidenceKindServiceDaoEdge"); if (value === "biz-dao-edge") return t("evidenceKindBizDaoEdge"); if (value === "dao-mapper-edge") return t("evidenceKindDaoMapperEdge"); if (value === "sql-call") return t("evidenceKindSqlCall"); if (value === "integration-call") return t("evidenceKindIntegrationCall"); if (value === "name-fallback") return t("evidenceKindNameFallback"); return value || ""; }',
     '    function pill(content, extra) { return \'<span class="pill \' + (extra || "") + \'">\' + esc(content) + "</span>"; }',
     '    function itemHtml(title, lines, pills, wide) { return \'<div class="item\' + (wide ? " wide" : "") + \'"><div class="item-top"><div><strong>\' + esc(title) + \'</strong></div><div class="pill-row">\' + (pills || []).join("") + \'</div></div>\' + lines.map((line) => \'<div class="secondary">\' + line + "</div>").join("") + "</div>"; }',
     '    function flowStep(label, value) { return \'<span class="flow-step"><strong>\' + esc(label) + \'</strong><span>\' + esc(value || "-") + "</span></span>"; }',
-    '    function openDataFlow(searchTerm) { state.tab = "supporting"; state.search = String(searchTerm || "").toLowerCase(); searchInput.value = searchTerm || ""; invalidatePanelCache(); render(); }',
+    '    function openDataFlow(searchTerm) { state.tab = "supporting"; state.search = String(searchTerm || "").toLowerCase(); state.showHiddenDataPaths = true; searchInput.value = searchTerm || ""; invalidatePanelCache(); render(); }',
     '    function openFlowDetail(detailId) { state.selectedFlowId = detailId; state.tab = "flow-detail"; invalidatePanelCache(); render(); }',
     '    function inferSourceTab(detail) { if (!detail) return "screen-flow"; if (detail.type === "framework_flow_detail") return "framework-flow"; if (detail.type === "api_flow_detail") return "api-flow"; return "screen-flow"; }',
     '    function sourceTabLabel(detail) { const tabId = inferSourceTab(detail); if (tabId === "framework-flow") return t("frameworkFlow"); if (tabId === "api-flow") return t("apiFlow"); return t("screenFlow"); }',
     '    function detailResultTarget(detail) { const outputSection = (detail.sections || []).find((section) => section.key === "detailOutput"); const sectionLines = outputSection && Array.isArray(outputSection.lines) ? outputSection.lines : []; const resultLine = sectionLines.find((line) => line.startsWith("view: ") || line.startsWith("layout: ") || line.startsWith("result: ") || line.startsWith("resolved jsp candidates: ")); if (resultLine && resultLine.includes(": ")) { return resultLine.split(": ").slice(1).join(": ") || "-"; } return detail.summary || "-"; }',
     '    function detailPrimaryRoute(detail) { const requestSection = (detail.sections || []).find((section) => section.key === "detailRequestPath" || section.key === "detailFrameworkRouting"); const sectionLines = requestSection && Array.isArray(requestSection.lines) ? requestSection.lines : []; const routeLine = sectionLines.find((line) => line.startsWith("request URL: ") || line.startsWith("sample request URLs: ")); if (routeLine && routeLine.includes(": ")) { return routeLine.split(": ").slice(1).join(": ") || detail.title; } return detail.title; }',
     '    function detailControllerName(detail) { const requestSection = (detail.sections || []).find((section) => section.key === "detailRequestPath" || section.key === "detailFrameworkRouting"); const sectionLines = requestSection && Array.isArray(requestSection.lines) ? requestSection.lines : []; const controllerLine = sectionLines.find((line) => line.startsWith("controller: ") || line.startsWith("dispatcher: ")); if (controllerLine && controllerLine.includes(": ")) { return controllerLine.split(": ").slice(1).join(": ") || "-"; } return (detail.summary.split(" -> ")[1]) || "-"; }',
-    '    function requestFlowHtml(flow, wide) { const routeText = flow.route || flow.title; const outputLabel = flow.view || flow.layout ? t("view") : t("response"); const outputValue = flow.view || flow.layout || flow.responseType || "-"; const chain = \'<div class="flow-chain">\' + [flowStep(t("requestUrl"), routeText), flowStep(t("dispatcher"), flow.dispatcher || "-"), flowStep(t("controller"), flow.controller || "-"), flowStep(outputLabel, outputValue)].join(\'<span class="flow-arrow">→</span>\') + "</div>"; const routeDetails = (flow.routeValues || []).length > 2 ? \'<details class="details"><summary>\' + esc(t("showAllRoutes") + " (" + flow.routeValues.length + ")") + \'</summary><div class="details-body">\' + flow.routeValues.map((value) => \'<div class="secondary">\' + esc(value) + "</div>").join("") + "</div></details>" : ""; const lines = [esc(t("entryPattern") + ": " + (flow.entryPattern || "-")), esc(t("dispatcherConfig") + ": " + (flow.dispatcherConfig || "-")), esc(t("controllerFile") + ": " + (flow.controllerPath || "-")), esc(t("actionMethod") + ": " + (flow.action || "-")), esc(t("service") + ": " + (flow.service || "-")), esc(t("dao") + ": " + (flow.dao || "-")), esc(t("mapper") + ": " + (flow.mapper || "-")), esc(t("sql") + ": " + (flow.sql || "-")), esc("variants: " + String(flow.variantCount || 1))]; const actions = [\'<button class="action-btn" type="button" data-open-flow-detail="\' + esc(flow.detailId) + \'">\' + esc(t("openFlowDetail")) + "</button>"]; if (flow.relatedDataSearchTerm) { actions.push(\'<button class="action-btn" type="button" data-open-data-flow="\' + esc(flow.relatedDataSearchTerm) + \'">\' + esc(t("openDataFlow")) + "</button>"); } const selectedClass = state.selectedFlowId === flow.detailId ? " selected" : ""; return \'<div class="item\' + selectedClass + (wide ? " wide" : "") + \'"><div class="item-top"><div><strong>\' + esc(flow.title) + \'</strong></div><div class="pill-row">\' + [pill(flow.type), pill(confidenceLabel(flow.confidence), "conf-" + flow.confidence)].join("") + \'</div></div>\' + chain + routeDetails + lines.map((line) => \'<div class="secondary">\' + line + "</div>").join("") + \'<div class="action-row">\' + actions.join("") + "</div></div>"; }',
+    '    function responseTagLabel(tag) { if (tag === "download") return t("downloadTag"); if (tag === "ajax") return t("ajaxTag"); if (tag === "internal-ui-linked") return t("internalUiLinkedTag"); if (tag === "external-facing candidate") return t("externalFacingCandidateTag"); return tag; }',
+    '    function responseKindLabel(kind) { if (kind === "json") return t("responseKindJson"); if (kind === "file") return t("responseKindFile"); if (kind === "redirect") return t("responseKindRedirect"); if (kind === "action") return t("responseKindAction"); if (kind === "unknown") return t("responseKindUnknown"); return kind || t("responseKindUnknown"); }',
+    '    function requestFlowHtml(flow, wide) { const routeText = flow.route || flow.title; const outputLabel = flow.view || flow.layout ? t("view") : t("response"); const outputValue = flow.view || flow.layout || flow.responseType || "-"; const chain = \'<div class="flow-chain">\' + [flowStep(t("requestUrl"), routeText), flowStep(t("dispatcher"), flow.dispatcher || "-"), flowStep(t("controller"), flow.controller || "-"), flowStep(outputLabel, outputValue)].join(\'<span class="flow-arrow">→</span>\') + "</div>"; const routeDetails = (flow.routeValues || []).length > 2 ? \'<details class="details"><summary>\' + esc(t("showAllRoutes") + " (" + flow.routeValues.length + ")") + \'</summary><div class="details-body">\' + flow.routeValues.map((value) => \'<div class="secondary">\' + esc(value) + "</div>").join("") + "</div></details>" : ""; const responseKind = flow.responseKind ? [esc(t("responseKindLabel") + ": " + responseKindLabel(flow.responseKind))] : []; const responseTags = Array.isArray(flow.responseTags) && flow.responseTags.length > 0 ? [esc(t("responseTagsLabel") + ": " + flow.responseTags.map(responseTagLabel).join(", "))] : []; const integration = Array.isArray(flow.integration) && flow.integration.length > 0 ? [esc(t("integration") + ": " + flow.integration.join(", "))] : []; const lines = [esc(t("entryPattern") + ": " + (flow.entryPattern || "-")), esc(t("dispatcherConfig") + ": " + (flow.dispatcherConfig || "-")), esc(t("controllerFile") + ": " + (flow.controllerPath || "-")), esc(t("actionMethod") + ": " + (flow.action || "-")), esc(t("service") + ": " + (flow.service || "-")), esc(t("biz") + ": " + (flow.biz || "-")), esc(t("dao") + ": " + (flow.dao || "-")), esc(t("mapper") + ": " + (flow.mapper || "-")), esc(t("sql") + ": " + (flow.sql || "-")), ...integration, ...responseKind, ...responseTags, esc("variants: " + String(flow.variantCount || 1))]; const extraPills = (flow.responseKind ? [pill(responseKindLabel(flow.responseKind), "tag-response-kind")] : []).concat(Array.isArray(flow.responseTags) ? flow.responseTags.map((tag) => pill(responseTagLabel(tag), "tag-" + tag.replace(/[^a-z0-9]+/gi, "-").toLowerCase())) : []); const actions = [\'<button class="action-btn" type="button" data-open-flow-detail="\' + esc(flow.detailId) + \'">\' + esc(t("openFlowDetail")) + "</button>"]; if (flow.relatedDataSearchTerm) { actions.push(\'<button class="action-btn" type="button" data-open-data-flow="\' + esc(flow.relatedDataSearchTerm) + \'">\' + esc(t("openDataFlow")) + "</button>"); } const selectedClass = state.selectedFlowId === flow.detailId ? " selected" : ""; return \'<div class="item\' + selectedClass + (wide ? " wide" : "") + \'"><div class="item-top"><div><strong>\' + esc(flow.title) + \'</strong></div><div class="pill-row">\' + [pill(flow.type), ...extraPills, pill(confidenceLabel(flow.confidence), "conf-" + flow.confidence)].join("") + \'</div></div>\' + chain + routeDetails + lines.map((line) => \'<div class="secondary">\' + line + "</div>").join("") + \'<div class="action-row">\' + actions.join("") + "</div></div>"; }',
     '    function frameworkFlowHtml(flow, wide) { const chain = \'<div class="flow-chain">\' + [flowStep(t("entryPattern"), flow.entryPattern || "-"), flowStep(t("dispatcher"), flow.dispatcher || "-"), flowStep(t("dispatcherConfig"), flow.dispatcherConfig || "-"), flowStep(t("screenFlow"), String(flow.screenFlowCount) + " / " + t("apiFlow") + " " + String(flow.apiFlowCount))].join(\'<span class="flow-arrow">→</span>\') + "</div>"; const lines = [esc(t("requestUrl") + ": " + ((flow.sampleRoutes || []).slice(0, 3).join(", ") || "-")), esc(t("dispatcherConfig") + ": " + (flow.contextConfigs || []).join(", "))]; const actions = \'<div class="action-row"><button class="action-btn" type="button" data-open-flow-detail="\' + esc(flow.detailId) + \'">\' + esc(t("openFlowDetail")) + "</button></div>"; const selectedClass = state.selectedFlowId === flow.detailId ? " selected" : ""; return \'<div class="item\' + selectedClass + (wide ? " wide" : "") + \'"><div class="item-top"><div><strong>\' + esc(flow.title) + \'</strong></div><div class="pill-row">\' + [pill(flow.type), pill(confidenceLabel(flow.confidence), "conf-" + flow.confidence)].join("") + \'</div></div>\' + chain + lines.map((line) => \'<div class="secondary">\' + line + "</div>").join("") + actions + "</div>"; }',
     '    function sectionHtml(title, inner, useGrid) { const modeClass = useGrid ? (state.viewMode === "cards" ? "grid" : "wide-list") : "list"; return \'<div><h3 class="section-title">\' + esc(title) + \'</h3><div class="\' + modeClass + \'">\' + inner + "</div></div>"; }',
     '    function titleWithCount(title, count) { return title + " (" + count + ")"; }',
@@ -2412,7 +3243,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
     '    const typeValues = new Set([].concat(report.snapshot.nodes.map((node) => node.type), report.frameworkFlowCards.map((card) => card.type), report.screenFlowCards.map((card) => card.type), report.apiFlowCards.map((card) => card.type), report.dataFlowCards.map((card) => card.type), report.flowDetails.map((detail) => detail.type)));',
     '    Array.from(typeValues).sort().forEach((type) => { const option = document.createElement("option"); option.value = type; option.textContent = type; typeFilter.appendChild(option); });',
     '    tabs.forEach((tab) => { tab.addEventListener("click", () => { state.tab = tab.dataset.tab; render(); }); });',
-    '    document.addEventListener("click", (event) => { const element = event.target instanceof Element ? event.target : null; if (!element) return; const dataFlowTarget = element.closest("[data-open-data-flow]"); if (dataFlowTarget) { const searchTerm = dataFlowTarget.getAttribute("data-open-data-flow") || ""; openDataFlow(searchTerm); return; } const detailTarget = element.closest("[data-open-flow-detail]"); if (detailTarget) { const detailId = detailTarget.getAttribute("data-open-flow-detail") || ""; openFlowDetail(detailId); return; } const tabTarget = element.closest("[data-tab-target]"); if (tabTarget) { state.tab = tabTarget.getAttribute("data-tab-target") || "start-here"; invalidatePanelCache(); render(); } });',
+    '    document.addEventListener("click", (event) => { const element = event.target instanceof Element ? event.target : null; if (!element) return; const dataFlowTarget = element.closest("[data-open-data-flow]"); if (dataFlowTarget) { const searchTerm = dataFlowTarget.getAttribute("data-open-data-flow") || ""; openDataFlow(searchTerm); return; } const hiddenToggleTarget = element.closest("[data-toggle-hidden-data-paths]"); if (hiddenToggleTarget) { state.showHiddenDataPaths = !state.showHiddenDataPaths; invalidatePanelCache(); render(); return; } const detailTarget = element.closest("[data-open-flow-detail]"); if (detailTarget) { const detailId = detailTarget.getAttribute("data-open-flow-detail") || ""; openFlowDetail(detailId); return; } const tabTarget = element.closest("[data-tab-target]"); if (tabTarget) { state.tab = tabTarget.getAttribute("data-tab-target") || "start-here"; invalidatePanelCache(); render(); } });',
     '    searchInput.addEventListener("input", () => { state.search = searchInput.value.toLowerCase(); invalidatePanelCache(); render(); });',
     '    typeFilter.addEventListener("change", () => { state.type = typeFilter.value; invalidatePanelCache(); render(); });',
     '    confidenceFilter.addEventListener("change", () => { state.confidence = confidenceFilter.value; invalidatePanelCache(); render(); });',
@@ -2450,7 +3281,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
     '      if (report.largeSnapshotMode) {',
     '        const filtered = report.flowDetails.filter(matchesCommon);',
     '        const visible = hasActiveFilter() ? filtered : filtered.slice(0, 8);',
-    '        const previewItems = visible.map((detail) => itemHtml(detail.title, [esc(detail.summary)], [pill(detail.type), pill(confidenceLabel(detail.confidence), "conf-" + detail.confidence)], true)).join("");',
+    '        const previewItems = visible.map((detail) => itemHtml(detail.title, [esc(detail.summary)], [pill(detail.type)].concat(detail.responseKind ? [pill(responseKindLabel(detail.responseKind), "tag-response-kind")] : []).concat((detail.responseTags || []).map((tag) => pill(responseTagLabel(tag), "tag-" + tag.replace(/[^a-z0-9]+/gi, "-").toLowerCase()))).concat([pill(confidenceLabel(detail.confidence), "conf-" + detail.confidence)]), true)).join("");',
     '        return renderLargePreview("flowDetail", report.detailPaths.flowDetails, visible.length, filtered.length, previewItems);',
     '      }',
     '      const detail = report.flowDetails.find((item) => item.id === state.selectedFlowId);',
@@ -2473,32 +3304,38 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot): string 
     '        \'<div class="context-grid"><div class="context-cell"><strong>\' + esc(t("selectedRoute")) + \'</strong><span>\' + esc(detailPrimaryRoute(detail)) + \'</span></div><div class="context-cell"><strong>\' + esc(t("flowKind")) + \'</strong><span>\' + esc(sourceTabLabel(detail)) + \'</span></div><div class="context-cell"><strong>\' + esc(t("controller")) + \'</strong><span>\' + esc(detailControllerName(detail)) + \'</span></div><div class="context-cell"><strong>\' + esc(t("resultTarget")) + \'</strong><span>\' + esc(detailResultTarget(detail)) + \'</span></div></div>\',',
     '        \'<div class="context-actions"><button class="action-btn" type="button" data-tab-target="\' + esc(inferSourceTab(detail)) + \'">\' + esc(t("backToList")) + \'</button></div></div>\',',
     '      ].join("");',
-    '      const summary = \'<div class="item wide"><div class="item-top"><div><strong>\' + esc(detail.title) + \'</strong></div><div class="pill-row">\' + [pill(detail.type), pill(confidenceLabel(detail.confidence), "conf-" + detail.confidence)].join("") + \'</div></div><div class="secondary">\' + esc(detail.summary) + "</div>" + actions + "</div>";',
+    '      const summary = \'<div class="item wide"><div class="item-top"><div><strong>\' + esc(detail.title) + \'</strong></div><div class="pill-row">\' + [pill(detail.type)].concat(detail.responseKind ? [pill(responseKindLabel(detail.responseKind), "tag-response-kind")] : []).concat((detail.responseTags || []).map((tag) => pill(responseTagLabel(tag), "tag-" + tag.replace(/[^a-z0-9]+/gi, "-").toLowerCase()))).concat([pill(confidenceLabel(detail.confidence), "conf-" + detail.confidence)]).join("") + \'</div></div><div class="secondary">\' + esc(detail.summary) + "</div>" + actions + "</div>";',
     '      return sectionHtml(t("selectedFlow"), contextBar + summary + \'<div class="detail-panel">\' + sections + "</div>", false);',
     '    }',
     '    function renderSupporting() {',
     '      const filteredData = report.dataFlowCards.filter(matchesCommon);',
-    '      const visibleData = report.largeSnapshotMode && !hasActiveFilter() ? filteredData.slice(0, 40) : filteredData;',
+    '      const defaultVisibleData = filteredData.filter((card) => !card.hiddenByDefault);',
+    '      const hiddenData = filteredData.filter((card) => card.hiddenByDefault);',
+    '      const selectedData = state.showHiddenDataPaths ? filteredData : defaultVisibleData;',
+    '      const visibleData = report.largeSnapshotMode && !hasActiveFilter() ? selectedData.slice(0, 40) : selectedData;',
     '      const dataItems = renderList(visibleData, (card) => {',
-    '        const pathTitle = [card.controller || "-", card.service || card.dao || "-", card.dao || card.mapper || card.sql ? (card.dao || card.mapper || card.sql || "-") : null].filter(Boolean).join(" → ");',
+    '        const pathTitle = [card.controller || "-", card.service || card.biz || card.dao || "-", card.biz || card.dao || card.mapper || card.sql || "-", card.dao || card.mapper || card.sql ? (card.dao || card.mapper || card.sql || "-") : null].filter(Boolean).join(" → ");',
     '        const requestSummary = (card.routeValues || []).length > 0 ? ((card.routeValues || []).slice(0, 2).join(", ") + ((card.routeValues || []).length > 2 ? " +" + String((card.routeValues || []).length - 2) : "")) : (card.route || "-");',
     '        const requestDetails = (card.routeValues || []).length > 0 ? \'<details class="details"><summary>\' + esc(t("showAllRequests") + " (" + card.routeValues.length + ")") + \'</summary><div class="details-body"><div class="secondary">\' + esc(t("requestList")) + "</div>" + card.routeValues.map((value) => \'<div class="secondary">\' + esc(value) + "</div>").join("") + "</div></details>" : "";',
-    '        const lines = [esc(t("dataFlowMeaning")), esc(t("linkedRequests") + ": " + requestSummary), esc(t("controller") + ": " + (card.controller || "-")), esc(t("service") + ": " + (card.service || t("notConfirmed"))), esc(t("dao") + ": " + (card.dao || t("notConfirmed"))), esc(t("mapper") + ": " + (card.mapper || t("notLinked"))), esc(t("sql") + ": " + (card.sql || t("notTracedYet"))), esc(t("evidenceBasis") + ": " + (card.evidenceLabel || t("notConfirmed")))];',
-    '        return \'<div class="item\' + (state.viewMode === "list" ? " wide" : "") + \'"><div class="item-top"><div><strong>\' + esc(pathTitle || (card.route || card.id)) + \'</strong></div><div class="pill-row">\' + [pill(t("possibleBackendPath")), pill(card.type), pill(confidenceLabel(card.confidence), "conf-" + card.confidence)].join("") + \'</div></div>\' + lines.map((line) => \'<div class="secondary">\' + line + "</div>").join("") + requestDetails + "</div>";',
+    '        const lines = [esc(t("inferredWarning")), esc(t("dataFlowMeaning")), esc(t("linkedRequests") + ": " + requestSummary), esc(t("inferenceLevelLabel") + ": " + inferenceLevelLabel(card.inferenceLevel)), esc(t("evidenceKindsLabel") + ": " + (card.evidenceKinds || []).map(evidenceKindLabel).join(", ")), esc(t("controller") + ": " + (card.controller || "-")), esc(t("service") + ": " + (card.service || t("notConfirmed"))), esc(t("biz") + ": " + (card.biz || t("notConfirmed"))), esc(t("dao") + ": " + (card.dao || t("notConfirmed"))), esc(t("mapper") + ": " + (card.mapper || t("notLinked"))), esc(t("sql") + ": " + (card.sql || t("notTracedYet"))), esc(t("integration") + ": " + ((card.integration || []).join(", ") || t("notConfirmed"))), esc(t("evidenceBasis") + ": " + (card.evidenceLabel || t("notConfirmed")))].concat(card.hiddenByDefault ? [esc(t("hiddenCandidateReason"))] : []);',
+    '        return \'<div class="item supporting \' + (card.inferenceLevel === "heuristic" ? "heuristic " : "") + (state.viewMode === "list" ? "wide" : "") + \'"><div class="item-top"><div><strong>\' + esc(pathTitle || (card.route || card.id)) + \'</strong></div><div class="pill-row">\' + [pill(t("possibleBackendPath")), pill(inferenceLevelLabel(card.inferenceLevel), "tag-" + card.inferenceLevel), pill(card.type), pill(confidenceLabel(card.confidence), "conf-" + card.confidence)].join("") + \'</div></div>\' + lines.map((line) => \'<div class="secondary">\' + line + "</div>").join("") + requestDetails + "</div>";',
     '      });',
+    '      const dataSummary = \'<div class="supporting-note"><strong>\' + esc(t("relatedData")) + \'</strong><div class="secondary">\' + esc(t("inferredWarning")) + \'</div><div class="secondary">\' + esc(t("hiddenCandidatesSummary") + ": " + hiddenData.length) + \'</div><div class="action-row"><button class="action-btn" type="button" data-toggle-hidden-data-paths="true">\' + esc(state.showHiddenDataPaths ? t("hideHiddenDataPaths") : t("showHiddenDataPaths")) + "</button></div></div>";',
+    '      const filteredProfiles = report.moduleProfileCards.filter(matchesCommon);',
+    '      const profileItems = renderList(filteredProfiles, (card) => itemHtml(card.title, [esc(t("moduleProfileLabel") + ": " + card.profileLabel), esc(t("path") + ": " + card.modulePath)].concat((card.evidence || []).map((line) => esc(t("moduleEvidence") + ": " + line))), [pill(card.type)], true));',
     '      const filteredLibraries = report.libraryAnchorCards.filter(matchesCommon);',
     '      const libraryItems = renderList(filteredLibraries, (card) => itemHtml(card.title, [esc(t("path") + ": " + card.modulePath), esc(t("libraryClasses") + ": " + card.classCount), esc(t("libraryConfigs") + ": " + card.configCount), esc(t("libraryServices") + ": " + card.serviceCount), esc(t("libraryDaos") + ": " + card.daoCount), esc(t("topControllers") + ": " + ((card.topControllers || []).join(", ") || "-"))], [pill(card.type)], true));',
     '      const structures = report.snapshot.nodes.filter((node) => ["module", "deployment_unit", "config"].includes(node.type));',
     '      const structureSummary = itemHtml(t("runtimeContext"), [esc(t("runtimeContextGuide")), esc(t("modulesCount") + ": " + String(structures.filter((node) => node.type === "module").length)), esc(t("deploymentsCount") + ": " + String(structures.filter((node) => node.type === "deployment_unit").length)), esc(t("configsCount") + ": " + String(structures.filter((node) => node.type === "config").length))], [], true) + \'<div class="action-row"><button class="action-btn" type="button" data-tab-target="explore">\' + esc(t("viewInExplore")) + "</button></div>";',
     '      if (report.largeSnapshotMode) {',
-    '        return renderLargePreview("supporting", report.detailPaths.architecture, visibleData.length + filteredLibraries.length, filteredData.length + filteredLibraries.length, dataItems + libraryItems + structureSummary);',
+    '        return renderLargePreview("supporting", report.detailPaths.architecture, visibleData.length + filteredProfiles.length + filteredLibraries.length, selectedData.length + filteredProfiles.length + filteredLibraries.length, dataSummary + profileItems + dataItems + libraryItems + structureSummary);',
     '      }',
-    '      return sectionHtml(titleWithCount(t("relatedData"), filteredData.length), dataItems, true) + sectionHtml(titleWithCount(t("sharedModules"), filteredLibraries.length), libraryItems, false) + sectionHtml(t("runtimeContext"), structureSummary, false);',
+    '      return sectionHtml(titleWithCount(t("moduleProfiles"), filteredProfiles.length), profileItems, false) + sectionHtml(titleWithCount(t("relatedData"), selectedData.length), dataSummary + dataItems, true) + sectionHtml(titleWithCount(t("sharedModules"), filteredLibraries.length), libraryItems, false) + sectionHtml(t("runtimeContext"), structureSummary, false);',
     '    }',
     '    function renderExplore() { const lines = [esc(t("largeSnapshotNotice")), esc("nodes: " + report.snapshotTotals.nodes), esc("edges: " + report.snapshotTotals.edges), esc("entry points: " + report.snapshotTotals.entryPoints)]; const actions = \'<div class="action-row"><a class="action-btn" href="\' + esc(report.detailPaths.explore) + \'" target="_blank" rel="noreferrer">\' + esc(t("explore")) + ".html</a></div>"; return sectionHtml(t("explore"), itemHtml(t("explore"), lines, [], true) + actions, false); }',
     '    function renderEvidence() { const lines = [esc(t("largeSnapshotNotice")), esc("artifacts: " + report.snapshotTotals.artifacts), esc("warnings: " + report.snapshotTotals.warnings)]; const actions = \'<div class="action-row"><a class="action-btn" href="\' + esc(report.detailPaths.evidence) + \'" target="_blank" rel="noreferrer">\' + esc(t("evidence")) + ".html</a></div>"; return sectionHtml(t("evidence"), itemHtml(t("artifactsTab"), lines, [], true) + actions, false); }',
     '    function renderRaw() { const actions = \'<div class="action-row"><a class="action-btn" href="\' + esc(report.detailPaths.raw) + \'" target="_blank" rel="noreferrer">raw.html</a><a class="action-btn" href="\' + esc(report.rawSnapshotPath) + \'" target="_blank" rel="noreferrer">\' + esc(t("openSnapshotFile")) + "</a></div>"; return sectionHtml(t("rawSnapshot"), itemHtml(t("rawSnapshot"), [esc("nodes: " + report.snapshotTotals.nodes), esc("edges: " + report.snapshotTotals.edges), esc("artifacts: " + report.snapshotTotals.artifacts)], [], true) + actions, false); }',
-    '    function renderPanel(tabId) { const cacheKey = [tabId, state.lang, state.search, state.type, state.confidence, state.selectedFlowId, state.viewMode].join("::"); if (panelCache.has(cacheKey)) { document.getElementById(tabId).innerHTML = panelCache.get(cacheKey); return; } const html = (() => { if (tabId === "start-here") return renderStartHere(); if (tabId === "framework-flow") return renderFrameworkFlow(); if (tabId === "screen-flow") return renderScreenFlow(); if (tabId === "api-flow") return renderApiFlow(); if (tabId === "flow-detail") return renderFlowDetail(); if (tabId === "supporting") return renderSupporting(); if (tabId === "explore") return renderExplore(); if (tabId === "evidence") return renderEvidence(); if (tabId === "raw") return renderRaw(); return ""; })(); panelCache.set(cacheKey, html); document.getElementById(tabId).innerHTML = html; }',
+    '    function renderPanel(tabId) { const cacheKey = [tabId, state.lang, state.search, state.type, state.confidence, state.selectedFlowId, state.viewMode, state.showHiddenDataPaths].join("::"); if (panelCache.has(cacheKey)) { document.getElementById(tabId).innerHTML = panelCache.get(cacheKey); return; } const html = (() => { if (tabId === "start-here") return renderStartHere(); if (tabId === "framework-flow") return renderFrameworkFlow(); if (tabId === "screen-flow") return renderScreenFlow(); if (tabId === "api-flow") return renderApiFlow(); if (tabId === "flow-detail") return renderFlowDetail(); if (tabId === "supporting") return renderSupporting(); if (tabId === "explore") return renderExplore(); if (tabId === "evidence") return renderEvidence(); if (tabId === "raw") return renderRaw(); return ""; })(); panelCache.set(cacheKey, html); document.getElementById(tabId).innerHTML = html; }',
     '    function render() { updateStaticText(); tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === state.tab)); document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("hidden", panel.id !== state.tab)); renderPanel(state.tab); }',
     '    render();',
     "  </script>",
@@ -2686,10 +3523,10 @@ export function renderApiFlowsHtmlReport(snapshot: AnalysisSnapshot, flowData?: 
   const { apiFlowCards } = flowData ?? buildFlowReportData(snapshot);
   return renderStandalonePage({
     title: `code2me api flows - ${snapshot.projectId}`,
-    heading: `${snapshot.projectId} API Flows`,
+    heading: `${snapshot.projectId} Non-screen Flows`,
     summaryLines: [
-      "Full API flow list split out of report.html for large-project viewing.",
-      `api flows: ${apiFlowCards.length}`,
+      "Full non-screen flow list split out of report.html for large-project viewing.",
+      `non-screen flows: ${apiFlowCards.length}`,
     ],
     links: [
       { href: "report.html", label: "report.html" },
@@ -2697,7 +3534,7 @@ export function renderApiFlowsHtmlReport(snapshot: AnalysisSnapshot, flowData?: 
     ],
     sections: [
       {
-        title: "API Flows",
+        title: "Non-screen Flows",
         items: apiFlowCards.map((card) =>
           `${card.title} | route=${card.route ?? "-"} | controller=${card.controller ?? "-"} | action=${card.action ?? "-"} | response=${card.responseType ?? "-"}`,
         ),
@@ -2731,12 +3568,15 @@ export function renderFlowDetailsHtmlReport(snapshot: AnalysisSnapshot, flowData
 
 export function renderArchitectureContextHtmlReport(snapshot: AnalysisSnapshot, flowData?: FlowReportData): string {
   const { dataFlowCards, libraryAnchorCards } = flowData ?? buildFlowReportData(snapshot);
+  const visibleCards = dataFlowCards.filter((card) => !card.hiddenByDefault);
+  const hiddenCards = dataFlowCards.filter((card) => card.hiddenByDefault);
   return renderStandalonePage({
     title: `code2me architecture context - ${snapshot.projectId}`,
     heading: `${snapshot.projectId} Architecture Context`,
     summaryLines: [
       "Full architecture context split out of report.html for large-project viewing.",
-      `data access cards: ${dataFlowCards.length}`,
+      `visible inferred data paths: ${visibleCards.length}`,
+      `hidden inferred candidates: ${hiddenCards.length}`,
       `shared module hubs: ${libraryAnchorCards.length}`,
     ],
     links: [
@@ -2745,9 +3585,15 @@ export function renderArchitectureContextHtmlReport(snapshot: AnalysisSnapshot, 
     ],
     sections: [
       {
-        title: "Data Access Backbone",
-        items: dataFlowCards.map((card) =>
-          `${card.controller ?? "-"} -> ${card.service ?? "-"} -> ${card.dao ?? "-"} -> ${card.mapper ?? "-"} -> ${card.sql ?? "-"} | evidence=${card.evidenceLabel}`,
+        title: "Inferred Data Paths",
+        items: visibleCards.map((card) =>
+          `${card.controller ?? "-"} -> ${card.service ?? "-"} -> ${card.dao ?? "-"} -> ${card.mapper ?? "-"} -> ${card.sql ?? "-"} | level=${card.inferenceLevel} | evidenceKinds=${card.evidenceKinds.join(",")} | evidence=${card.evidenceLabel}`,
+        ),
+      },
+      {
+        title: "Hidden Inferred Candidates",
+        items: hiddenCards.map((card) =>
+          `${card.controller ?? "-"} -> ${card.service ?? "-"} -> ${card.dao ?? "-"} -> ${card.mapper ?? "-"} -> ${card.sql ?? "-"} | level=${card.inferenceLevel} | hiddenByDefault=true | evidenceKinds=${card.evidenceKinds.join(",")} | evidence=${card.evidenceLabel}`,
         ),
       },
       {

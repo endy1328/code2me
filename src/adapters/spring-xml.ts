@@ -23,10 +23,19 @@ function inferBeanType(className: string | undefined): string {
   if (className.endsWith("Controller") || className.endsWith("Action")) {
     return "controller";
   }
-  if (className.endsWith("Service")) {
+  if (className.endsWith("Service") || className.endsWith("ServiceImpl")) {
     return "service";
   }
-  if (className.endsWith("Dao") || className.endsWith("DAO")) {
+  if (className.endsWith("Biz") || className.endsWith("BizImpl") || className.endsWith("BIZ")) {
+    return "biz";
+  }
+  if (
+    className.endsWith("Dao") ||
+    className.endsWith("DAO") ||
+    className.endsWith("DaoImpl") ||
+    className.endsWith("DAOImpl") ||
+    className.endsWith("RepositoryImpl")
+  ) {
     return "dao";
   }
   return "config";
@@ -150,7 +159,16 @@ export class SpringXmlAdapter implements AnalyzerAdapter {
         methodNameResolverRef: string | undefined;
         requestMappings: string[];
         handlerMappingPatterns: string[];
-        requestHandlers: Array<{ methodName: string; requestMappings: string[]; viewNames: string[]; responseBody: boolean }>;
+        requestHandlers: Array<{
+          methodName: string;
+          requestMappings: string[];
+          viewNames: string[];
+          responseBody: boolean;
+          produces: string[];
+          contentTypes: string[];
+          redirectTargets: string[];
+          fileResponseHints: string[];
+        }>;
         references: Array<{ refName: string; source: string }>;
       }> = [];
 
@@ -222,6 +240,10 @@ export class SpringXmlAdapter implements AnalyzerAdapter {
           requestMappings: [route],
           viewNames: [] as string[],
           responseBody: false,
+          produces: [] as string[],
+          contentTypes: [] as string[],
+          redirectTargets: [] as string[],
+          fileResponseHints: [] as string[],
         }));
         const references = extractBeanReferences(bean, properties, constructorArgs);
         beanDescriptors.push({
