@@ -1,0 +1,13 @@
+<beans>
+  <bean id="adminOverviewController" class="com.example.legacy.web.AdminOverviewController" />
+  <bean id="adminOverviewService" class="com.example.legacy.lib.AdminOverviewService" />
+  <bean id="adminOverviewDao" class="com.example.legacy.lib.AdminOverviewDao" />
+  <bean id="jspViewResolver" class="org.springframework.web.servlet.view.InternalResourceViewResolver">
+    <property name="prefix" value="/WEB-INF/jsp/" />
+    <property name="suffix" value=".jsp" />
+  </bean>
+  <bean id="legacyViewResolver" class="org.springframework.web.servlet.view.InternalResourceViewResolver">
+    <property name="prefix" value="/WEB-INF/views/" />
+    <property name="suffix" value=".jsp" />
+  </bean>
+</beans>

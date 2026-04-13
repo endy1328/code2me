@@ -386,4 +386,83 @@ describe("Legacy Java EE vertical slice", () => {
     expect(confirmedDataCard?.inferenceLevel).toBe("confirmed");
     expect(confirmedDataCard?.hiddenByDefault).toBe(false);
   });
+
+  it("resolves multiple view resolvers into variant JSP candidates for the same logical view", async () => {
+    const projectRoot = resolve("samples/legacy-java-ee-view-resolver-variants");
+    const result = await analyzeProject({
+      projectRoot,
+      projectId: "legacy-java-ee-view-resolver-variants",
+      profile: new LegacyJavaEeProfile(),
+    });
+
+    expect(result.profileDetection?.matched).toBe(true);
+    expect(result.profileDetection?.score).toBe(12);
+
+    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
+    const payload = extractReportPayload(reportHtml) as {
+      screenFlowCards: Array<{
+        route?: string;
+      }>;
+      flowDetails: Array<{
+        title: string;
+        sections: Array<{
+          key: string;
+          lines?: string[];
+        }>;
+      }>;
+    };
+
+    expect(payload.screenFlowCards.some((card) => card.route === "/admin/overview.do")).toBe(true);
+    const detail = payload.flowDetails.find((item) => item.title.includes("/admin/overview.do"));
+    const outputSection = detail?.sections.find((section) => section.key === "detailOutput");
+    expect(outputSection?.lines).toContain("logical view: admin/overview");
+    expect(outputSection?.lines?.some((line) => line.includes("jspViewResolver: /WEB-INF/jsp/*.jsp"))).toBe(true);
+    expect(outputSection?.lines?.some((line) => line.includes("legacyViewResolver: /WEB-INF/views/*.jsp"))).toBe(true);
+    expect(outputSection?.lines?.some((line) => line.includes("/WEB-INF/jsp/admin/overview.jsp"))).toBe(true);
+    expect(outputSection?.lines?.some((line) => line.includes("/WEB-INF/views/admin/overview.jsp"))).toBe(true);
+  });
+
+  it("keeps multiple contextConfigLocation entries visible in framework and request details for env/locale branches", async () => {
+    const projectRoot = resolve("samples/legacy-java-ee-env-branch");
+    const result = await analyzeProject({
+      projectRoot,
+      projectId: "legacy-java-ee-env-branch",
+      profile: new LegacyJavaEeProfile(),
+    });
+
+    expect(result.profileDetection?.matched).toBe(true);
+    expect(result.profileDetection?.score).toBe(12);
+    expect(result.snapshot.nodes.some((node) => node.type === "config" && node.path?.endsWith("applicationContext-core.xml"))).toBe(true);
+    expect(result.snapshot.nodes.some((node) => node.type === "config" && node.path?.endsWith("applicationContext-locale.xml"))).toBe(true);
+
+    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
+    const payload = extractReportPayload(reportHtml) as {
+      frameworkFlowCards: Array<{
+        contextConfigs?: string[];
+      }>;
+      flowDetails: Array<{
+        type?: string;
+        title: string;
+        sections: Array<{
+          key: string;
+          lines?: string[];
+        }>;
+      }>;
+    };
+
+    expect(payload.frameworkFlowCards.some((card) =>
+      card.contextConfigs?.includes("/WEB-INF/applicationContext-core.xml") &&
+      card.contextConfigs?.includes("/WEB-INF/applicationContext-locale.xml"),
+    )).toBe(true);
+
+    const frameworkDetail = payload.flowDetails.find((detail) => detail.type === "framework_flow_detail");
+    const frameworkBootstrap = frameworkDetail?.sections.find((section) => section.key === "detailFrameworkBootstrap");
+    expect(frameworkBootstrap?.lines?.some((line) => line.includes("/WEB-INF/applicationContext-core.xml"))).toBe(true);
+    expect(frameworkBootstrap?.lines?.some((line) => line.includes("/WEB-INF/applicationContext-locale.xml"))).toBe(true);
+
+    const requestDetail = payload.flowDetails.find((detail) => detail.title.includes("/account/list.do"));
+    const entrySection = requestDetail?.sections.find((section) => section.key === "detailEntrySetup");
+    expect(entrySection?.lines?.some((line) => line.includes("/WEB-INF/applicationContext-core.xml"))).toBe(true);
+    expect(entrySection?.lines?.some((line) => line.includes("/WEB-INF/applicationContext-locale.xml"))).toBe(true);
+  });
 });

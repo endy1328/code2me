@@ -1,0 +1,13 @@
+<beans>
+  <bean id="accountService" class="com.example.legacy.lib.AccountService">
+    <property name="accountDao" ref="accountDao" />
+  </bean>
+  <bean id="accountDao" class="com.example.legacy.lib.AccountDao" />
+  <bean id="propertyConfigurer" class="org.springframework.beans.factory.config.PropertyPlaceholderConfigurer">
+    <property name="locations">
+      <list>
+        <value>classpath:ops.properties</value>
+      </list>
+    </property>
+  </bean>
+</beans>

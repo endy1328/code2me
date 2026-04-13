@@ -22,7 +22,7 @@
 
 - `TypeScript + Node.js` 기반 CLI-first 구조다.
 - 현재 구현 범위는 `Legacy Java EE` 프로파일, persistence/view/layout 확장 어댑터, 프레임워크 흐름/화면 흐름/API 흐름/흐름 상세/아키텍처 맥락 리포트다.
-- 샘플 입력은 `samples/legacy-java-ee-minimal`, `samples/legacy-java-ee-action-mapping`, `samples/legacy-java-ee-bean-name-mapping`, `samples/legacy-java-ee-entry-multi-dispatcher`, `samples/legacy-java-ee-persistence-priority`, `samples/legacy-java-ee-mixed-web-api`, `samples/legacy-java-ee-sitemesh-pattern`, `samples/legacy-java-ee-sitemesh-alias`, `samples/legacy-java-ee-sitemesh-direct`, `samples/legacy-java-ee-sitemesh-excludes` 아래에 있다.
+- 샘플 입력은 `samples/legacy-java-ee-minimal`, `samples/legacy-java-ee-action-mapping`, `samples/legacy-java-ee-bean-name-mapping`, `samples/legacy-java-ee-entry-multi-dispatcher`, `samples/legacy-java-ee-persistence-priority`, `samples/legacy-java-ee-mixed-web-api`, `samples/legacy-java-ee-view-resolver-variants`, `samples/legacy-java-ee-env-branch`, `samples/legacy-java-ee-sitemesh-pattern`, `samples/legacy-java-ee-sitemesh-alias`, `samples/legacy-java-ee-sitemesh-direct`, `samples/legacy-java-ee-sitemesh-excludes` 아래에 있다.
 - 분석 결과는 분석 대상 프로젝트 아래 `.code2me/` 디렉터리에 저장되고, 동시에 현재 프로그램 내부 `.code2me-result/projects/<project-key>/`에도 미러 저장된다.
 
 ## Requirements
@@ -52,6 +52,8 @@ NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-minimal
 NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-entry-multi-dispatcher
 NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-persistence-priority
 NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-mixed-web-api
+NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-view-resolver-variants
+NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-env-branch
 NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-action-mapping
 NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-bean-name-mapping
 NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-sitemesh-pattern
@@ -161,6 +163,8 @@ NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- --list-adapters
 - Multi-dispatcher entry 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-entry-multi-dispatcher`
 - Persistence priority 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-persistence-priority`
 - Mixed screen/api mapping 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-mixed-web-api`
+- View resolver variants 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-view-resolver-variants`
+- Env/locale branch 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-env-branch`
 - SiteMesh alias 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-sitemesh-alias`
 - SiteMesh direct 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-sitemesh-direct`
 - SiteMesh excludes/defaultdir 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-sitemesh-excludes`

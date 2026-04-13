@@ -1,0 +1,6 @@
+<project name="legacy-env-branch" default="package">
+  <target name="compile" />
+  <target name="package">
+    <war destfile="dist/legacy-env-branch.war" />
+  </target>
+</project>

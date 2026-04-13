@@ -34,6 +34,8 @@
 - [x] mapping-focused fixture 추가
 - [x] persistence-focused fixture 추가
 - [x] view/layout-focused fixture 추가
+- [x] view resolver variants fixture 추가
+- [x] env/locale branch fixture 추가
 
 ### 4. Public / Real Project Validation
 
@@ -72,6 +74,8 @@
   - multi-dispatcher entry fixture 추가
   - persistence priority fixture 추가
   - mixed web/api mapping fixture 추가
+  - view resolver variants fixture 추가
+  - env/locale branch fixture 추가
   - SiteMesh excludes/defaultdir fixture 추가
   - handler 단위 SiteMesh include/exclude 해석 보강
   - 완료 기준 / 회귀 매트릭스 문서 추가
@@ -84,9 +88,9 @@
   - 관련 회귀 테스트 추가
 - 다음 우선순위
   - representative real-project gate 반복 적용
-  - 공개 샘플 2차 검증
-  - view resolver variant fixture
-  - env/locale branch fixture
+  - 공개 샘플 4차 검증
+  - 실제 프로젝트 read-only gate 반복
+  - `action-family-legacy-web` 착수 여부 최종 결정
 
 ## Verification Baseline
 
@@ -98,5 +102,11 @@
   - `npm run analyze -- samples/legacy-java-ee-entry-multi-dispatcher`: 통과
   - `npm run analyze -- samples/legacy-java-ee-persistence-priority`: 통과
   - `npm run analyze -- samples/legacy-java-ee-mixed-web-api`: 통과
+  - `npm run analyze -- samples/legacy-java-ee-view-resolver-variants`: 통과
+  - `npm run analyze -- samples/legacy-java-ee-env-branch`: 통과
   - `npm run analyze -- /tmp/jpetstore-6-code2me`: 통과
   - `npm run analyze -- /tmp/spring-framework-petclinic-code2me`: no-match boundary 확인
+  - `npm run analyze -- /tmp/struts-examples-code2me/spring-struts`: hard fail 기록
+  - `npm run analyze -- /tmp/struts-examples-code2me/form-validation`: no-match boundary 확인
+  - `npm run analyze -- /tmp/stripes-code2me/examples`: no-match boundary 확인
+  - `npm run analyze -- /tmp/legacy-java-ee-minimal-readonly`: read-only gate 통과
