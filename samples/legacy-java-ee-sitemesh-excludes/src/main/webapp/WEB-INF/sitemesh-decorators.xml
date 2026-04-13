@@ -1,0 +1,6 @@
+<decorators defaultdir="/WEB-INF/layouts">
+  <excludes>
+    <pattern>/admin/*</pattern>
+  </excludes>
+  <decorator page="main.jsp" pattern="/public/*" />
+</decorators>

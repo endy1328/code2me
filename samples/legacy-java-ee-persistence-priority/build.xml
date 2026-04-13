@@ -1,0 +1,6 @@
+<project name="legacy-persistence-priority" default="package">
+  <target name="compile" />
+  <target name="package">
+    <war destfile="dist/legacy-persistence-priority.war" />
+  </target>
+</project>

@@ -96,6 +96,12 @@ function extractParameterTypes(signature: string): string[] {
     .filter((value) => /^[A-Z][A-Za-z0-9_]*$/.test(value));
 }
 
+function stripComments(content: string): string {
+  return content
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/.*$/gm, " ");
+}
+
 function extractTypedMembers(
   content: string,
   packageName: string | undefined,
@@ -142,7 +148,7 @@ function extractTypedMembers(
     }
   };
 
-  const fieldPattern = /((?:@\w+(?:\([^)]*\))?\s*)*)(?:private|protected|public)\s+(?:static\s+)?(?:final\s+)?([A-Z][\w<>, ?\[\]]+)\s+([a-zA-Z_][A-Za-z0-9_]*)\s*(?:=|;)/g;
+  const fieldPattern = /((?:@\w+(?:\([^)]*\))?\s*)*)(?:(?:private|protected|public)\s+)?(?:static\s+)?(?:final\s+)?([A-Z][\w<>, ?\[\]]+)\s+([a-zA-Z_][A-Za-z0-9_]*)\s*(?:=|;)/g;
   for (const match of content.matchAll(fieldPattern)) {
     const annotationBlock = match[1] ?? "";
     const simpleTypeName = simplifyTypeName(match[2] ?? "");
@@ -479,10 +485,10 @@ function extractMethodSummaries(
   }> = [];
   const typedMembers = extractTypedMembers(content, packageName, imports);
   const memberIndex = new Map(typedMembers.map((member) => [member.memberName, member]));
-  const signaturePattern = /((?:@\w+(?:\([^)]*\))?\s*)*)(public|protected|private)\s+[\w<>\[\], ?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:throws\s+[^{]+)?\{/g;
+  const signaturePattern = /((?:@\w+(?:\([^)]*\))?\s*)*)(?:public|protected|private)?\s*[\w<>\[\], ?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:throws\s+[^{]+)?\{/g;
   let match: RegExpExecArray | null;
   while ((match = signaturePattern.exec(content)) !== null) {
-    const methodName = match[3] ?? "";
+    const methodName = match[2] ?? "";
     const openBraceIndex = content.indexOf("{", match.index + match[0].length - 1);
     const closeBraceIndex = findMatchingBrace(content, openBraceIndex);
     const methodBody = content.slice(openBraceIndex + 1, closeBraceIndex);
@@ -566,11 +572,11 @@ function extractRequestHandlers(content: string): Array<{
   }> = [];
   const typedMembers = extractTypedMembers(content, extractPackageName(content), extractImports(content));
   const memberIndex = new Map(typedMembers.map((member) => [member.memberName, member]));
-  const signaturePattern = /((?:@\w+(?:\([^)]*\))?\s*)*)(public|protected|private)\s+[\w<>\[\], ?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:throws\s+[^{]+)?\{/g;
+  const signaturePattern = /((?:@\w+(?:\([^)]*\))?\s*)*)(?:public|protected|private)?\s*[\w<>\[\], ?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:throws\s+[^{]+)?\{/g;
   let match: RegExpExecArray | null;
   while ((match = signaturePattern.exec(content)) !== null) {
     const annotationBlock = match[1] ?? "";
-    const methodName = match[3] ?? "";
+    const methodName = match[2] ?? "";
     const mappingMatches = Array.from(annotationBlock.matchAll(/@(?:RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*\(([^)]*)\)/g));
     const openBraceIndex = content.indexOf("{", match.index + match[0].length - 1);
     const closeBraceIndex = findMatchingBrace(content, openBraceIndex);
@@ -637,6 +643,84 @@ function extractRequestHandlers(content: string): Array<{
   return handlers;
 }
 
+function extractActionMethodHandlers(
+  content: string,
+  packageName: string | undefined,
+  imports: string[],
+  classRequestMappings: string[],
+): Array<{
+  methodName: string;
+  requestMappings: string[];
+  viewNames: string[];
+  responseBody: boolean;
+  produces: string[];
+  contentTypes: string[];
+  redirectTargets: string[];
+  fileResponseHints: string[];
+  serviceCalls: Array<{ targetType: string; targetName: string; methodName: string }>;
+}> {
+  const cleanContent = stripComments(content);
+  const summaries = extractMethodSummaries(cleanContent, packageName, imports);
+  const summaryByMethod = new Map(summaries.map((summary) => [summary.methodName, summary]));
+  const handlers: Array<{
+    methodName: string;
+    requestMappings: string[];
+    viewNames: string[];
+    responseBody: boolean;
+    produces: string[];
+    contentTypes: string[];
+    redirectTargets: string[];
+    fileResponseHints: string[];
+    serviceCalls: Array<{ targetType: string; targetName: string; methodName: string }>;
+  }> = [];
+  const signaturePattern = /(?:public|protected|private)?\s*[\w<>\[\], ?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*(?:throws\s+[^{]+)?\{/g;
+  let match: RegExpExecArray | null;
+  while ((match = signaturePattern.exec(cleanContent)) !== null) {
+    const methodName = match[1] ?? "";
+    const parameters = match[2] ?? "";
+    if (!/(HttpServletRequest|HttpServletResponse|ModelMap|Model\b|Map\b)/.test(parameters)) {
+      continue;
+    }
+    const openBraceIndex = cleanContent.indexOf("{", match.index + match[0].length - 1);
+    const closeBraceIndex = findMatchingBrace(cleanContent, openBraceIndex);
+    const methodBody = cleanContent.slice(openBraceIndex + 1, closeBraceIndex);
+    const viewNames = collectViewNamesFromMethodBody(methodBody);
+    const redirectTargets = collectRedirectTargetsFromMethodBody(methodBody);
+    const contentTypes = collectResponseContentTypes(methodBody, "");
+    const fileResponseHints = inferFileResponseHints(methodBody, contentTypes);
+    const summary = summaryByMethod.get(methodName);
+    const serviceCalls = (summary?.dependencyCalls ?? [])
+      .filter((call) => call.targetType === "service" || call.targetType === "biz" || call.targetType === "dao");
+    if (
+      viewNames.length === 0 &&
+      redirectTargets.length === 0 &&
+      fileResponseHints.length === 0 &&
+      contentTypes.length === 0 &&
+      serviceCalls.length === 0
+    ) {
+      signaturePattern.lastIndex = closeBraceIndex + 1;
+      continue;
+    }
+    handlers.push({
+      methodName,
+      requestMappings: classRequestMappings,
+      viewNames,
+      responseBody: false,
+      produces: [],
+      contentTypes,
+      redirectTargets,
+      fileResponseHints,
+      serviceCalls: serviceCalls.map((call) => ({
+        targetType: call.targetType,
+        targetName: call.targetName,
+        methodName: call.methodName,
+      })),
+    });
+    signaturePattern.lastIndex = closeBraceIndex + 1;
+  }
+  return handlers;
+}
+
 export class JavaSourceBasicAdapter implements AnalyzerAdapter {
   readonly id = "java-source-basic";
   readonly name = "Java source basic Adapter";
@@ -687,7 +771,15 @@ export class JavaSourceBasicAdapter implements AnalyzerAdapter {
       const fqn = packageName ? `${packageName}.${className}` : className;
       const imports = extractImports(content);
       const requestMappings = role === "controller" ? extractRequestMappings(content) : [];
-      const requestHandlers = role === "controller" ? extractRequestHandlers(content) : [];
+      const requestHandlers = role === "controller"
+        ? (() => {
+            const annotatedHandlers = extractRequestHandlers(content);
+            if (annotatedHandlers.length > 0) {
+              return annotatedHandlers;
+            }
+            return extractActionMethodHandlers(content, packageName, imports, requestMappings);
+          })()
+        : [];
       const methodSummaries = role === "service" || role === "biz" || role === "dao"
         ? extractMethodSummaries(content, packageName, imports)
         : [];

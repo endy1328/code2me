@@ -515,6 +515,91 @@ describe("interactive report entry flow synthesis", () => {
     expect(report.screenCards[0]?.entryPattern).toContain("/app/search");
   });
 
+  it("prefers specific routes ahead of wildcard-like routes in primary and request flow ordering", () => {
+    const projectId = "route-order-project";
+    const snapshot: AnalysisSnapshot = {
+      projectId,
+      profileId: "legacy-java-ee",
+      createdAt: "2026-04-10T00:00:00.000Z",
+      nodes: [
+        createNode({
+          id: "controller-1",
+          type: "controller",
+          name: "com.example.AdminAction",
+          displayName: "adminAction",
+          projectId,
+          path: "app/src/com/example/AdminAction.java",
+          sourceAdapterIds: ["spring-xml", "java-source-basic"],
+          confidence: "high",
+          evidence: [],
+          metadata: {
+            requestMappings: ["/admin/*.as", "/admin/list.as", "/admin/detail.as"],
+            requestHandlers: [
+              { methodName: "list", requestMappings: ["/admin/list.as"], viewNames: ["admin/list"], responseBody: false },
+              { methodName: "detail", requestMappings: ["/admin/detail.as"], viewNames: ["admin/detail"], responseBody: false },
+            ],
+          },
+        }),
+        createNode({
+          id: "view-1",
+          type: "view",
+          name: "admin/list",
+          displayName: "admin/list",
+          projectId,
+          path: "app/WEB-INF/views/admin/list.jsp",
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          evidence: [],
+        }),
+        createNode({
+          id: "view-2",
+          type: "view",
+          name: "admin/detail",
+          displayName: "admin/detail",
+          projectId,
+          path: "app/WEB-INF/views/admin/detail.jsp",
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          evidence: [],
+        }),
+      ],
+      edges: [
+        createEdge({
+          id: "render-1",
+          type: "renders",
+          from: "controller-1",
+          to: "view-1",
+          projectId,
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          directional: true,
+          evidence: [],
+          metadata: { handlerMethods: ["list"] },
+        }),
+        createEdge({
+          id: "render-2",
+          type: "renders",
+          from: "controller-1",
+          to: "view-2",
+          projectId,
+          sourceAdapterIds: ["jsp-view"],
+          confidence: "high",
+          directional: true,
+          evidence: [],
+          metadata: { handlerMethods: ["detail"] },
+        }),
+      ],
+      entryPoints: [],
+      warnings: [],
+      artifacts: [],
+    };
+
+    const report = extractReportData(renderInteractiveHtmlReport(snapshot));
+    expect(report.primaryFlowCards[0]?.route).toBe("/admin/detail.as");
+    expect(report.screenFlowCards[0]?.route).toBe("/admin/detail.as");
+    expect(report.screenFlowCards[1]?.route).toBe("/admin/list.as");
+  });
+
   it("keeps primary entry flows diverse when one controller renders many views", () => {
     const projectId = "test-project";
     const nodes: GraphNode[] = [

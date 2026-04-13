@@ -166,4 +166,153 @@ describe("Legacy Java EE vertical slice", () => {
     expect(requestSection?.lines.some((line) => line.includes("bean: sampleAction"))).toBe(true);
     expect(requestSection?.lines.some((line) => line.includes("handler method: getSampleList"))).toBe(true);
   });
+
+  it("recovers bean-name URL mappings and action service calls from XML-heavy controllers", async () => {
+    const projectRoot = resolve("samples/legacy-java-ee-bean-name-mapping");
+    const result = await analyzeProject({
+      projectRoot,
+      projectId: "legacy-java-ee-bean-name-mapping",
+      profile: new LegacyJavaEeProfile(),
+    });
+
+    const controllerNode = result.snapshot.nodes.find((node) => node.type === "controller" && node.name === "com.example.legacy.web.ReportAction");
+    expect(controllerNode).toBeDefined();
+    expect(controllerNode?.metadata?.requestMappings).toContain("/report/list.as");
+    expect(controllerNode?.metadata?.requestMappings).toContain("/report/exportExcel.as");
+    expect(controllerNode?.metadata?.handlerMappingPatterns).toContain("/report/*.as");
+    expect(controllerNode?.metadata?.methodNameResolverRef).toBe("reportMethodNameResolver");
+
+    const requestHandlers = Array.isArray(controllerNode?.metadata?.requestHandlers)
+      ? controllerNode?.metadata?.requestHandlers as Array<Record<string, unknown>>
+      : [];
+    const listHandler = requestHandlers.find((handler) => handler.methodName === "list");
+    const exportHandler = requestHandlers.find((handler) => handler.methodName === "exportExcel");
+    expect(listHandler?.requestMappings).toContain("/report/list.as");
+    expect(listHandler?.viewNames).toContain("report/list");
+    expect(exportHandler?.requestMappings).toContain("/report/exportExcel.as");
+    expect(exportHandler?.redirectTargets).toContain("report/list.as");
+    expect(Array.isArray(listHandler?.serviceCalls)).toBe(true);
+    expect((listHandler?.serviceCalls as Array<Record<string, unknown>>).some((call) =>
+      call.targetName === "com.example.legacy.lib.ReportService" && call.methodName === "loadReportList",
+    )).toBe(true);
+
+    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
+    const payload = extractReportPayload(reportHtml) as {
+      screenFlowCards: Array<{
+        route?: string;
+        service?: string;
+      }>;
+      apiFlowCards: Array<{
+        route?: string;
+        responseKind?: string;
+      }>;
+      flowDetails: Array<{
+        title: string;
+        sections: Array<{
+          key: string;
+          lines: string[];
+        }>;
+      }>;
+    };
+    expect(payload.screenFlowCards.some((card) => card.route === "/report/list.as" && card.service === "ReportService")).toBe(true);
+    expect(payload.apiFlowCards.some((card) => card.route === "/report/exportExcel.as" && card.responseKind === "redirect")).toBe(true);
+    const detail = payload.flowDetails.find((item) => item.title.includes("/report/list.as"));
+    const requestSection = detail?.sections.find((section) => section.key === "detailRequestPath");
+    expect(requestSection?.lines.some((line) => line.includes("handler mapping: /report/*.as"))).toBe(true);
+    expect(requestSection?.lines.some((line) => line.includes("method resolver: reportMethodNameResolver"))).toBe(true);
+    expect(requestSection?.lines.some((line) => line.includes("handler method: list"))).toBe(true);
+  });
+
+  it("keeps multi-dispatcher entry context attached to the matching screen and api flows", async () => {
+    const projectRoot = resolve("samples/legacy-java-ee-entry-multi-dispatcher");
+    const result = await analyzeProject({
+      projectRoot,
+      projectId: "legacy-java-ee-entry-multi-dispatcher",
+      profile: new LegacyJavaEeProfile(),
+    });
+
+    expect(result.snapshot.entryPoints).toHaveLength(2);
+    expect(result.snapshot.entryPoints.some((entry) => entry.metadata?.urlPattern === "*.do")).toBe(true);
+    expect(result.snapshot.entryPoints.some((entry) => entry.metadata?.urlPattern === "/api/*")).toBe(true);
+
+    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
+    const payload = extractReportPayload(reportHtml) as {
+      frameworkFlowCards: Array<{
+        entryPattern?: string;
+        dispatcherConfig?: string;
+      }>;
+      screenFlowCards: Array<{
+        route?: string;
+        entryPattern?: string;
+        dispatcherConfig?: string;
+      }>;
+      apiFlowCards: Array<{
+        route?: string;
+        entryPattern?: string;
+        dispatcherConfig?: string;
+        responseKind?: string;
+      }>;
+    };
+
+    expect(payload.frameworkFlowCards).toHaveLength(2);
+    expect(payload.frameworkFlowCards.some((card) => card.entryPattern?.includes("*.do") && card.dispatcherConfig?.includes("web-dispatcher-servlet.xml"))).toBe(true);
+    expect(payload.frameworkFlowCards.some((card) => card.entryPattern?.includes("/api/*") && card.dispatcherConfig?.includes("api-dispatcher-servlet.xml"))).toBe(true);
+
+    const screenFlow = payload.screenFlowCards.find((card) => card.route === "/screen/list.do");
+    expect(screenFlow?.entryPattern).toContain("*.do");
+    expect(screenFlow?.dispatcherConfig).toContain("web-dispatcher-servlet.xml");
+
+    const apiFlow = payload.apiFlowCards.find((card) => card.route === "/api/status");
+    expect(apiFlow?.entryPattern).toContain("/api/*");
+    expect(apiFlow?.dispatcherConfig).toContain("api-dispatcher-servlet.xml");
+    expect(apiFlow?.responseKind).toBe("json");
+  });
+
+  it("prefers direct dao mapper/sql evidence over name-based fallback candidates", async () => {
+    const projectRoot = resolve("samples/legacy-java-ee-persistence-priority");
+    const result = await analyzeProject({
+      projectRoot,
+      projectId: "legacy-java-ee-persistence-priority",
+      profile: new LegacyJavaEeProfile(),
+    });
+
+    expect(result.snapshot.nodes.some((node) => node.type === "mapper" && node.name === "com.example.legacy.lib.AccountDao")).toBe(true);
+    expect(result.snapshot.nodes.some((node) => node.type === "mapper" && node.name === "legacy.repo.AccountMapper")).toBe(true);
+    expect(result.snapshot.edges.some((edge) =>
+      edge.type === "queries" &&
+      edge.from.includes("com.example.legacy.lib.AccountDao") &&
+      edge.to.includes("com.example.legacy.lib.AccountDao"),
+    )).toBe(true);
+
+    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
+    const payload = extractReportPayload(reportHtml) as {
+      screenFlowCards: Array<{
+        route?: string;
+        mapper?: string;
+        sql?: string;
+      }>;
+      flowDetails: Array<{
+        title: string;
+        sections: Array<{
+          key: string;
+          lines: string[];
+        }>;
+      }>;
+    };
+
+    const screenFlow = payload.screenFlowCards.find((card) => card.route === "/account/list.as");
+    expect(screenFlow?.mapper).toBe("AccountDao");
+    expect(screenFlow?.sql).toBe("com.example.legacy.lib.AccountDao.selectAccounts");
+
+    const detail = payload.flowDetails.find((item) => item.title.includes("/account/list.as"));
+    const businessSection = detail?.sections.find((section) => section.key === "detailBusinessSteps");
+    const dataSection = detail?.sections.find((section) => section.key === "detailDataAccess");
+    expect(businessSection?.lines).toContain("sql evidence: dao method sql call: selectAccounts -> com.example.legacy.lib.AccountDao.selectAccounts");
+    expect(dataSection?.lines.some((line) =>
+      line.includes("mapper=AccountDao") &&
+      line.includes("sql=com.example.legacy.lib.AccountDao.selectAccounts") &&
+      line.includes("level=confirmed"),
+    )).toBe(true);
+    expect(dataSection?.lines.some((line) => line.includes("mapper=AccountMapper"))).toBe(false);
+  });
 });

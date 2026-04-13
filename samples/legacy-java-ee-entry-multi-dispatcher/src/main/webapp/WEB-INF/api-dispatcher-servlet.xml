@@ -1,0 +1,4 @@
+<beans>
+  <bean id="apiController" class="com.example.legacy.api.ApiController" />
+  <bean id="apiService" class="com.example.legacy.lib.ApiService" />
+</beans>

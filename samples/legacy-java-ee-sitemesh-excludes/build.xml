@@ -1,0 +1,6 @@
+<project name="legacy-sitemesh-excludes" default="package">
+  <target name="compile" />
+  <target name="package">
+    <war destfile="dist/legacy-sitemesh-excludes.war" />
+  </target>
+</project>

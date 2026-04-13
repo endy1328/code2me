@@ -156,6 +156,19 @@ function collectDirectViewIds(
     .map((candidate) => nodeId(context.projectId, "view", candidate));
 }
 
+function getControllerHandlers(node: GraphNode): Array<{ methodName: string; requestMappings: string[] }> {
+  if (!Array.isArray(node.metadata?.requestHandlers)) {
+    return [];
+  }
+  return (node.metadata.requestHandlers as Array<Record<string, unknown>>)
+    .map((handler) => ({
+      methodName: typeof handler.methodName === "string" ? handler.methodName : "handler",
+      requestMappings: Array.isArray(handler.requestMappings)
+        ? handler.requestMappings.filter((value): value is string => typeof value === "string" && value.length > 0)
+        : [],
+    }));
+}
+
 export class SiteMeshConfigAdapter implements AnalyzerAdapter {
   readonly id = "sitemesh-config";
   readonly name = "SiteMesh config Adapter";
@@ -276,17 +289,37 @@ export class SiteMeshConfigAdapter implements AnalyzerAdapter {
 
         if (includePatterns.length > 0) {
           for (const controllerNode of controllerNodes) {
-            const requestMappings = Array.isArray(controllerNode.metadata?.requestMappings)
-              ? controllerNode.metadata?.requestMappings.filter((value): value is string => typeof value === "string")
-              : [];
-            const included = requestMappings.some((route) => includePatterns.some((pattern) => routeMatchesPattern(route, pattern)));
-            const excluded = requestMappings.some((route) => excludePatterns.some((pattern) => routeMatchesPattern(route, pattern)));
-            if (!included || excluded) {
+            const handlers = getControllerHandlers(controllerNode);
+            if (handlers.length === 0) {
+              const requestMappings = Array.isArray(controllerNode.metadata?.requestMappings)
+                ? controllerNode.metadata?.requestMappings.filter((value): value is string => typeof value === "string")
+                : [];
+              const included = requestMappings.some((route) => includePatterns.some((pattern) => routeMatchesPattern(route, pattern)));
+              const excluded = requestMappings.some((route) => excludePatterns.some((pattern) => routeMatchesPattern(route, pattern)));
+              if (!included || excluded) {
+                continue;
+              }
+              for (const renderEdge of renderEdges) {
+                if (renderEdge.from === controllerNode.id) {
+                  matchedViewIds.add(renderEdge.to);
+                }
+              }
               continue;
             }
-            for (const renderEdge of renderEdges) {
-              if (renderEdge.from === controllerNode.id) {
-                matchedViewIds.add(renderEdge.to);
+
+            for (const handler of handlers) {
+              const included = handler.requestMappings.some((route) => includePatterns.some((pattern) => routeMatchesPattern(route, pattern)));
+              const excluded = handler.requestMappings.some((route) => excludePatterns.some((pattern) => routeMatchesPattern(route, pattern)));
+              if (!included || excluded) {
+                continue;
+              }
+              for (const renderEdge of renderEdges) {
+                const handlerMethods = Array.isArray(renderEdge.metadata?.handlerMethods)
+                  ? renderEdge.metadata.handlerMethods.filter((value): value is string => typeof value === "string")
+                  : [];
+                if (renderEdge.from === controllerNode.id && (handlerMethods.length === 0 || handlerMethods.includes(handler.methodName))) {
+                  matchedViewIds.add(renderEdge.to);
+                }
               }
             }
           }

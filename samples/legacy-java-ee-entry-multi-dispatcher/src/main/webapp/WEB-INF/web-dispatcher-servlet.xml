@@ -1,0 +1,9 @@
+<beans>
+  <bean id="screenController" class="com.example.legacy.web.ScreenController" />
+  <bean id="screenService" class="com.example.legacy.lib.ScreenService" />
+  <bean id="screenDao" class="com.example.legacy.lib.ScreenDao" />
+  <bean class="org.springframework.web.servlet.view.InternalResourceViewResolver">
+    <property name="prefix" value="/WEB-INF/views/" />
+    <property name="suffix" value=".jsp" />
+  </bean>
+</beans>

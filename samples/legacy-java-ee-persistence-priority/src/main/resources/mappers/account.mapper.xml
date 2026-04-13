@@ -1,0 +1,4 @@
+<mapper namespace="com.example.legacy.lib.AccountDao">
+  <select id="selectAccounts" />
+  <select id="selectAccountDetail" />
+</mapper>

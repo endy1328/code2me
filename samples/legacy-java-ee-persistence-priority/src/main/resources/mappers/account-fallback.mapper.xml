@@ -1,0 +1,3 @@
+<mapper namespace="legacy.repo.AccountMapper">
+  <select id="findAccounts" />
+</mapper>

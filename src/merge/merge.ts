@@ -29,12 +29,20 @@ function mergeRequestHandlers(left: unknown, right: unknown): Record<string, unk
         viewNames: mergeStringArrays(handler.viewNames, []) ?? [],
         responseBody: handler.responseBody === true,
         serviceCalls: Array.isArray(handler.serviceCalls) ? handler.serviceCalls : [],
+        produces: mergeStringArrays(handler.produces, []) ?? [],
+        contentTypes: mergeStringArrays(handler.contentTypes, []) ?? [],
+        redirectTargets: mergeStringArrays(handler.redirectTargets, []) ?? [],
+        fileResponseHints: mergeStringArrays(handler.fileResponseHints, []) ?? [],
       });
       continue;
     }
     existing.requestMappings = mergeStringArrays(existing.requestMappings, handler.requestMappings) ?? [];
     existing.viewNames = mergeStringArrays(existing.viewNames, handler.viewNames) ?? [];
     existing.responseBody = existing.responseBody === true || handler.responseBody === true;
+    existing.produces = mergeStringArrays(existing.produces, handler.produces) ?? [];
+    existing.contentTypes = mergeStringArrays(existing.contentTypes, handler.contentTypes) ?? [];
+    existing.redirectTargets = mergeStringArrays(existing.redirectTargets, handler.redirectTargets) ?? [];
+    existing.fileResponseHints = mergeStringArrays(existing.fileResponseHints, handler.fileResponseHints) ?? [];
     const mergedServiceCalls = [
       ...(Array.isArray(existing.serviceCalls) ? existing.serviceCalls : []),
       ...(Array.isArray(handler.serviceCalls) ? handler.serviceCalls : []),

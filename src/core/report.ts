@@ -820,6 +820,29 @@ function formatRouteLabel(values: string[]): string | undefined {
   return `${values.slice(0, 2).join(", ")} 외 ${values.length - 2}개`;
 }
 
+function routeSpecificityScore(route: string | undefined): number {
+  if (!route) {
+    return -1000;
+  }
+  const wildcardPenalty = (route.match(/\*/g) ?? []).length * 50;
+  const placeholderPenalty = (route.match(/[{}]/g) ?? []).length * 5;
+  const segmentCount = route.split("/").filter(Boolean).length;
+  const extensionBonus = /\.[a-z0-9]+$/i.test(route) ? 5 : 0;
+  return (segmentCount * 10) + route.length + extensionBonus - wildcardPenalty - placeholderPenalty;
+}
+
+function compareRoutes(left: string | undefined, right: string | undefined): number {
+  const scoreDiff = routeSpecificityScore(right) - routeSpecificityScore(left);
+  if (scoreDiff !== 0) {
+    return scoreDiff;
+  }
+  return (left ?? "").localeCompare(right ?? "");
+}
+
+function pickRepresentativeRoute(routes: string[]): string | undefined {
+  return [...uniqueStrings(routes)].sort(compareRoutes)[0];
+}
+
 function normalizePathLike(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
@@ -1278,11 +1301,10 @@ function collectScreenCards(snapshot: AnalysisSnapshot): ScreenCard[] {
   }
 
   if (cards.length > 0) {
-    return cards.sort((left, right) => {
-      const leftRoute = left.route ?? left.title;
-      const rightRoute = right.route ?? right.title;
-      return leftRoute.localeCompare(rightRoute);
-    });
+    return cards.sort((left, right) =>
+      compareRoutes(left.route ?? left.title, right.route ?? right.title) ||
+      (left.controller ?? "").localeCompare(right.controller ?? "") ||
+      (left.action ?? "").localeCompare(right.action ?? ""));
   }
 
   const layoutEdges = renderEdges.filter((edge) => {
@@ -1341,11 +1363,9 @@ function collectScreenCards(snapshot: AnalysisSnapshot): ScreenCard[] {
     seen.add(key);
   }
 
-  return cards.sort((left, right) => {
-    const leftRoute = left.route ?? left.title;
-    const rightRoute = right.route ?? right.title;
-    return leftRoute.localeCompare(rightRoute);
-  });
+  return cards.sort((left, right) =>
+    compareRoutes(left.route ?? left.title, right.route ?? right.title) ||
+    (left.view ?? left.title).localeCompare(right.view ?? right.title));
 }
 
 function collectDataFlowCards(snapshot: AnalysisSnapshot): DataFlowCard[] {
@@ -1716,6 +1736,8 @@ function collectPrimaryFlowCards(screenCards: ScreenCard[]): PrimaryFlowCard[] {
       if (card === undefined) {
         return null;
       }
+      const routeValues = uniqueStrings(group.flatMap((item) => item.routeValues));
+      const representativeRoute = pickRepresentativeRoute(routeValues) ?? card.route ?? card.title;
       const viewSummary = summarizeValueGroup(uniqueStrings(group.map((item) => item.view)), "views");
       const layoutSummary = summarizeValueGroup(uniqueStrings(group.map((item) => item.layout)), "layouts");
       const relatedDataSummary = uniqueStrings(group.flatMap((item) => item.relatedDataSummary));
@@ -1723,8 +1745,8 @@ function collectPrimaryFlowCards(screenCards: ScreenCard[]): PrimaryFlowCard[] {
       return {
         id: `primary:${card.id}`,
         type: "primary_entry_flow",
-        title: card.route ?? card.title,
-        route: card.route ?? card.title,
+        title: representativeRoute,
+        route: representativeRoute,
         entryPattern: card.entryPattern,
         dispatcher: card.dispatcher,
         dispatcherConfig: card.dispatcherConfig,
@@ -1734,7 +1756,7 @@ function collectPrimaryFlowCards(screenCards: ScreenCard[]): PrimaryFlowCard[] {
         action: card.action,
         view: viewSummary,
         layout: layoutSummary,
-        routeValues: uniqueStrings(group.flatMap((item) => item.routeValues)),
+        routeValues,
         relatedDataSummary,
         relatedDataSearchTerm: card.relatedDataSearchTerm,
         relatedDataCount: relatedDataSummary.length,
@@ -1742,6 +1764,10 @@ function collectPrimaryFlowCards(screenCards: ScreenCard[]): PrimaryFlowCard[] {
       };
     })
     .filter((card): card is PrimaryFlowCard => Boolean(card))
+    .sort((left, right) =>
+      compareRoutes(left.route, right.route) ||
+      (right.relatedDataCount - left.relatedDataCount) ||
+      (left.controller ?? "").localeCompare(right.controller ?? ""))
     .slice(0, 12);
 }
 
@@ -2135,6 +2161,16 @@ function buildRequestFlowCards(
       apiFlowCards.push(requestFlowCard);
     }
   }
+
+  screenFlowCards.sort((left, right) =>
+    compareRoutes(left.route ?? left.title, right.route ?? right.title) ||
+    (left.controller ?? "").localeCompare(right.controller ?? "") ||
+    (left.action ?? "").localeCompare(right.action ?? ""));
+  apiFlowCards.sort((left, right) =>
+    compareRoutes(left.route ?? left.title, right.route ?? right.title) ||
+    (left.controller ?? "").localeCompare(right.controller ?? "") ||
+    (left.action ?? "").localeCompare(right.action ?? ""));
+  flowDetails.sort((left, right) => compareRoutes(left.title, right.title));
 
   return {
     screenFlowCards,

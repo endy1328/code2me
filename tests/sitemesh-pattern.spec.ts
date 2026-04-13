@@ -49,4 +49,37 @@ describe("SiteMesh wildcard decorator matching", () => {
       ),
     ).toBe(true);
   });
+
+  it("applies defaultdir-based decorators only to included routes and skips excluded patterns", async () => {
+    const projectRoot = resolve("samples/legacy-java-ee-sitemesh-excludes");
+    const result = await analyzeProject({
+      projectRoot,
+      projectId: "legacy-java-ee-sitemesh-excludes",
+      profile: new LegacyJavaEeProfile(),
+    });
+
+    const { snapshot } = result;
+    const publicView = snapshot.nodes.find((node) => node.type === "view" && node.path?.endsWith("WEB-INF/views/public/list.jsp"));
+    const adminView = snapshot.nodes.find((node) => node.type === "view" && node.path?.endsWith("WEB-INF/views/admin/list.jsp"));
+    const layoutView = snapshot.nodes.find((node) => node.type === "view" && node.path?.endsWith("WEB-INF/layouts/main.jsp"));
+
+    expect(publicView).toBeDefined();
+    expect(adminView).toBeDefined();
+    expect(layoutView).toBeDefined();
+    expect(layoutView?.metadata?.role).toBe("layout");
+    expect(
+      snapshot.edges.some((edge) =>
+        edge.type === "renders" &&
+        edge.from === publicView?.id &&
+        edge.to === layoutView?.id,
+      ),
+    ).toBe(true);
+    expect(
+      snapshot.edges.some((edge) =>
+        edge.type === "renders" &&
+        edge.from === adminView?.id &&
+        edge.to === layoutView?.id,
+      ),
+    ).toBe(false);
+  });
 });

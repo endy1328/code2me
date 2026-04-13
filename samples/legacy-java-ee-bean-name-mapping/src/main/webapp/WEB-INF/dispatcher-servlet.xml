@@ -1,0 +1,31 @@
+<beans xmlns="http://www.springframework.org/schema/beans">
+  <bean class="org.springframework.web.servlet.handler.BeanNameUrlHandlerMapping" />
+
+  <bean
+    id="reportAction"
+    name="/report/*.as"
+    class="com.example.legacy.web.ReportAction">
+    <property name="methodNameResolver" ref="reportMethodNameResolver" />
+    <property name="reportService" ref="reportService" />
+  </bean>
+
+  <bean id="reportMethodNameResolver" class="org.springframework.web.servlet.mvc.multiaction.PropertiesMethodNameResolver">
+    <property name="mappings">
+      <props>
+        <prop key="/report/list.as">list</prop>
+        <prop key="/report/exportExcel.as">exportExcel</prop>
+      </props>
+    </property>
+  </bean>
+
+  <bean id="reportService" class="com.example.legacy.lib.ReportService">
+    <property name="reportDao" ref="reportDao" />
+  </bean>
+
+  <bean id="reportDao" class="com.example.legacy.lib.ReportDao" />
+
+  <bean class="org.springframework.web.servlet.view.InternalResourceViewResolver">
+    <property name="prefix" value="/WEB-INF/views/" />
+    <property name="suffix" value=".jsp" />
+  </bean>
+</beans>

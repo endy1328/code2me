@@ -9,6 +9,17 @@ type SpringBeans = {
   };
 };
 
+type RequestHandlerRecord = {
+  methodName: string;
+  requestMappings: string[];
+  viewNames: string[];
+  responseBody: boolean;
+  produces: string[];
+  contentTypes: string[];
+  redirectTargets: string[];
+  fileResponseHints: string[];
+};
+
 function asArray<T>(value: T | T[] | undefined): T[] {
   if (!value) {
     return [];
@@ -60,6 +71,19 @@ function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => value.length > 0)));
 }
 
+function extractBeanNames(bean: Record<string, unknown>, className: string | undefined): string[] {
+  const rawNames = [
+    typeof bean.id === "string" ? bean.id : undefined,
+    typeof bean.name === "string" ? bean.name : undefined,
+    className,
+  ]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .flatMap((value) => value.split(/[\s,;]+/))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return uniqueStrings(rawNames);
+}
+
 function extractPropertyRecords(bean: Record<string, unknown>): Array<Record<string, unknown>> {
   return asArray(bean.property).filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null);
 }
@@ -83,6 +107,47 @@ function extractPropsMap(property: Record<string, unknown>): Record<string, stri
       })
       .filter((entry): entry is [string, string] => Array.isArray(entry)),
   );
+}
+
+function extractMapEntries(property: Record<string, unknown>): Record<string, string> {
+  if (!property.map || typeof property.map !== "object") {
+    return {};
+  }
+  const entries = asArray((property.map as Record<string, unknown>).entry)
+    .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null);
+  return Object.fromEntries(
+    entries
+      .map((entry) => {
+        const key = typeof entry.key === "string" ? entry.key : undefined;
+        const valueRef = typeof entry["value-ref"] === "string"
+          ? entry["value-ref"]
+          : typeof entry.value === "string"
+            ? entry.value
+            : undefined;
+        return key && valueRef ? [key, valueRef] : undefined;
+      })
+      .filter((entry): entry is [string, string] => Array.isArray(entry)),
+  );
+}
+
+function extractRouteMappings(property: Record<string, unknown>): Record<string, string> {
+  return {
+    ...extractPropsMap(property),
+    ...extractMapEntries(property),
+  };
+}
+
+function createRequestHandler(methodName: string, requestMappings: string[]): RequestHandlerRecord {
+  return {
+    methodName,
+    requestMappings,
+    viewNames: [],
+    responseBody: false,
+    produces: [],
+    contentTypes: [],
+    redirectTargets: [],
+    fileResponseHints: [],
+  };
 }
 
 function extractBeanReferences(
@@ -149,8 +214,12 @@ export class SpringXmlAdapter implements AnalyzerAdapter {
       const beans = asArray(parsed.beans?.bean).filter((bean): bean is Record<string, unknown> => typeof bean === "object" && bean !== null);
       const handlerMappings = new Map<string, string[]>();
       const resolverMappings = new Map<string, Record<string, string>>();
+      const beanAliases = new Map<string, string[]>();
+      const beanNameGroups: string[][] = [];
+      let usesBeanNameUrlHandlerMapping = false;
       const beanDescriptors: Array<{
         beanName: string;
+        beanNames: string[];
         beanId: string | undefined;
         className: string | undefined;
         beanType: string;
@@ -174,20 +243,27 @@ export class SpringXmlAdapter implements AnalyzerAdapter {
 
       for (const bean of beans) {
         const className = typeof bean.class === "string" ? bean.class : undefined;
-        const beanName =
-          (typeof bean.id === "string" ? bean.id : undefined)
-          ?? (typeof bean.name === "string" ? bean.name : undefined)
-          ?? className
-          ?? "unnamed-bean";
+        const beanNames = extractBeanNames(bean, className);
+        const beanName = beanNames[0] ?? "unnamed-bean";
         const properties = extractPropertyRecords(bean);
         const mappingsProperty = properties.find((property) => property.name === "mappings");
-        const mappings = mappingsProperty ? extractPropsMap(mappingsProperty) : {};
+        const urlMapProperty = properties.find((property) => property.name === "urlMap");
+        const mappings = mappingsProperty ? extractRouteMappings(mappingsProperty) : {};
+        const urlMapMappings = urlMapProperty ? extractRouteMappings(urlMapProperty) : {};
+
+        for (const alias of beanNames) {
+          beanAliases.set(alias, beanNames);
+        }
+        beanNameGroups.push(beanNames);
 
         if (className?.includes("SimpleUrlHandlerMapping")) {
-          for (const [routePattern, targetBean] of Object.entries(mappings)) {
-            const current = handlerMappings.get(targetBean) ?? [];
-            current.push(normalizeMappingPath(routePattern));
-            handlerMappings.set(targetBean, current);
+          for (const [routePattern, targetBean] of Object.entries({ ...mappings, ...urlMapMappings })) {
+            const targets = beanAliases.get(targetBean) ?? [targetBean];
+            for (const targetName of targets) {
+              const current = handlerMappings.get(targetName) ?? [];
+              current.push(normalizeMappingPath(routePattern));
+              handlerMappings.set(targetName, current);
+            }
           }
         }
 
@@ -196,6 +272,22 @@ export class SpringXmlAdapter implements AnalyzerAdapter {
             beanName,
             Object.fromEntries(Object.entries(mappings).map(([route, methodName]) => [normalizeMappingPath(route), methodName])),
           );
+        }
+
+        if (className?.includes("BeanNameUrlHandlerMapping")) {
+          usesBeanNameUrlHandlerMapping = true;
+        }
+      }
+
+      if (usesBeanNameUrlHandlerMapping) {
+        for (const aliases of beanNameGroups) {
+          for (const alias of aliases.filter((value) => value.startsWith("/") || value.startsWith("*."))) {
+            for (const targetName of aliases) {
+              const current = handlerMappings.get(targetName) ?? [];
+              current.push(normalizeMappingPath(alias));
+              handlerMappings.set(targetName, current);
+            }
+          }
         }
       }
 
@@ -218,7 +310,8 @@ export class SpringXmlAdapter implements AnalyzerAdapter {
       for (const bean of beans) {
         const className = typeof bean.class === "string" ? bean.class : undefined;
         const beanId = typeof bean.id === "string" ? bean.id : undefined;
-        const beanName = beanId ?? (typeof bean.name === "string" ? bean.name : undefined) ?? className ?? "unnamed-bean";
+        const beanNames = extractBeanNames(bean, className);
+        const beanName = beanId ?? beanNames[0] ?? className ?? "unnamed-bean";
         const beanType = inferBeanType(className);
         const properties = extractPropertyRecords(bean);
         const constructorArgs = extractConstructorArgRecords(bean);
@@ -227,27 +320,25 @@ export class SpringXmlAdapter implements AnalyzerAdapter {
             .filter((property) => typeof property.name === "string" && typeof property.value === "string")
             .map((property) => [property.name as string, property.value as string]),
         );
-        const methodNameResolverRef = typeof bean["p:methodNameResolver-ref"] === "string"
-          ? bean["p:methodNameResolver-ref"]
-          : undefined;
+        const methodNameResolverProperty = properties.find((property) => property.name === "methodNameResolver");
+        const methodNameResolverRef =
+          typeof bean["p:methodNameResolver-ref"] === "string"
+            ? bean["p:methodNameResolver-ref"]
+            : typeof methodNameResolverProperty?.ref === "string"
+              ? methodNameResolverProperty.ref
+              : undefined;
+        const beanMappingNames = uniqueStrings(beanNames.flatMap((name) => beanAliases.get(name) ?? [name]));
         const requestMappings = uniqueStrings([
-          ...(handlerMappings.get(beanName) ?? []),
+          ...beanMappingNames.flatMap((name) => handlerMappings.get(name) ?? []),
           ...Object.keys(resolverMappings.get(methodNameResolverRef ?? "") ?? {}),
         ]);
-        const handlerMappingPatterns = uniqueStrings(handlerMappings.get(beanName) ?? []);
-        const requestHandlers = Object.entries(resolverMappings.get(methodNameResolverRef ?? "") ?? {}).map(([route, methodName]) => ({
-          methodName,
-          requestMappings: [route],
-          viewNames: [] as string[],
-          responseBody: false,
-          produces: [] as string[],
-          contentTypes: [] as string[],
-          redirectTargets: [] as string[],
-          fileResponseHints: [] as string[],
-        }));
+        const handlerMappingPatterns = uniqueStrings(beanMappingNames.flatMap((name) => handlerMappings.get(name) ?? []));
+        const requestHandlers = Object.entries(resolverMappings.get(methodNameResolverRef ?? "") ?? {}).map(([route, methodName]) =>
+          createRequestHandler(methodName, [route]));
         const references = extractBeanReferences(bean, properties, constructorArgs);
         beanDescriptors.push({
           beanName,
+          beanNames,
           beanId,
           className,
           beanType,
@@ -334,6 +425,12 @@ export class SpringXmlAdapter implements AnalyzerAdapter {
         descriptor.beanName,
         nodeId(context.projectId, descriptor.beanType, descriptor.className ?? `${file}:${descriptor.beanName}`),
       ]));
+      for (const descriptor of beanDescriptors) {
+        const targetId = nodeId(context.projectId, descriptor.beanType, descriptor.className ?? `${file}:${descriptor.beanName}`);
+        for (const alias of descriptor.beanNames) {
+          beanNodeIndex.set(alias, targetId);
+        }
+      }
       for (const descriptor of beanDescriptors) {
         const sourceNodeId = beanNodeIndex.get(descriptor.beanName);
         if (!sourceNodeId) {
