@@ -315,4 +315,75 @@ describe("Legacy Java EE vertical slice", () => {
     )).toBe(true);
     expect(dataSection?.lines.some((line) => line.includes("mapper=AccountMapper"))).toBe(false);
   });
+
+  it("covers mixed screen/api mappings with profile detection, flow details, and visible confirmed data paths", async () => {
+    const projectRoot = resolve("samples/legacy-java-ee-mixed-web-api");
+    const result = await analyzeProject({
+      projectRoot,
+      projectId: "legacy-java-ee-mixed-web-api",
+      profile: new LegacyJavaEeProfile(),
+    });
+
+    expect(result.profileDetection?.matched).toBe(true);
+    expect(result.profileDetection?.score).toBe(12);
+    expect(result.profileDetection?.reasons).toEqual(["build.xml", "web.xml", "spring-xml", "jsp"]);
+
+    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
+    const payload = extractReportPayload(reportHtml) as {
+      screenFlowCards: Array<{
+        route?: string;
+        service?: string;
+      }>;
+      apiFlowCards: Array<{
+        route?: string;
+        responseKind?: string;
+      }>;
+      flowDetails: Array<{
+        title: string;
+        sections: Array<{
+          key: string;
+          lines?: string[];
+          actions?: Array<{
+            target: string;
+          }>;
+        }>;
+      }>;
+      dataFlowCards: Array<{
+        routeValues?: string[];
+        inferenceLevel?: string;
+        hiddenByDefault?: boolean;
+        sql?: string;
+      }>;
+    };
+
+    expect(payload.screenFlowCards.some((card) => card.route === "/ops/dashboard/list.do" && card.service === "OpsDashboardService")).toBe(true);
+    expect(payload.apiFlowCards.some((card) => card.route === "/ops/dashboard/status.do" && card.responseKind === "json")).toBe(true);
+    expect(payload.apiFlowCards.some((card) => card.route === "/ops/dashboard/export.do" && card.responseKind === "file")).toBe(true);
+
+    const listDetail = payload.flowDetails.find((detail) => detail.title.includes("/ops/dashboard/list.do"));
+    expect(listDetail?.sections.map((section) => section.key)).toEqual([
+      "detailEntrySetup",
+      "detailRequestPath",
+      "detailBusinessSteps",
+      "detailDataAccess",
+      "detailOutput",
+      "detailUiActions",
+      "detailConfigs",
+    ]);
+    const uiSection = listDetail?.sections.find((section) => section.key === "detailUiActions");
+    expect(uiSection?.actions?.some((action) => action.target === "/ops/dashboard/status.do")).toBe(true);
+    expect(uiSection?.actions?.some((action) => action.target === "/ops/dashboard/export.do")).toBe(true);
+
+    const exportDetail = payload.flowDetails.find((detail) => detail.title.includes("/ops/dashboard/export.do"));
+    const outputSection = exportDetail?.sections.find((section) => section.key === "detailOutput");
+    expect(outputSection?.lines?.some((line) => line.includes("response kind: file"))).toBe(true);
+    expect(outputSection?.lines?.some((line) => line.includes("application/vnd.ms-excel"))).toBe(true);
+
+    const confirmedDataCard = payload.dataFlowCards.find((card) =>
+      card.routeValues?.includes("/ops/dashboard/list.do") &&
+      card.sql === "com.example.legacy.lib.OpsDashboardDao.selectOverview",
+    );
+    expect(confirmedDataCard?.inferenceLevel).toBe("confirmed");
+    expect(confirmedDataCard?.hiddenByDefault).toBe(false);
+  });
 });

@@ -1,0 +1,5 @@
+<mapper namespace="com.example.legacy.lib.OpsDashboardDao">
+  <select id="selectOverview">
+    SELECT OPS_ID, OPS_NAME FROM TB_OPS_DASHBOARD
+  </select>
+</mapper>
