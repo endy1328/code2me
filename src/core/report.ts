@@ -341,6 +341,11 @@ interface ReportPayload {
   };
 }
 
+export interface InteractiveReportAssets {
+  html: string;
+  dataScript: string;
+}
+
 function inferenceLevelRank(value: DataFlowCard["inferenceLevel"]): number {
   if (value === "confirmed") {
     return 3;
@@ -385,7 +390,12 @@ function normalizeSymbolStem(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
   }
-  const lastToken = value.split(/[./:$\-_]/).filter(Boolean).pop()?.toLowerCase();
+  const lastToken = value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[./:$\-_\s]/)
+    .filter(Boolean)
+    .join("")
+    .toLowerCase();
   if (!lastToken) {
     return undefined;
   }
@@ -393,9 +403,25 @@ function normalizeSymbolStem(value: string | undefined): string | undefined {
   let previous = "";
   while (stem !== previous) {
     previous = stem;
+    stem = stem.replace(/^(get|set|open|create|update|delete|save|load|search|download|upload)/i, "");
     stem = stem.replace(/(service|biz|dao|mapper|repository|sqlmap|ibatis|mybatis|impl)$/i, "");
+    stem = stem.replace(/(ajax)$/i, "");
   }
   return stem || lastToken;
+}
+
+function tokenizeSymbolParts(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+  return uniqueStrings(
+    value
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .split(/[^A-Za-z0-9]+|\s+/)
+      .map((part) => part.trim().toLowerCase())
+      .filter((part) => part.length > 1)
+      .map((part) => part.replace(/^(get|set|open|create|update|delete|save|list|detail)$/i, (matched) => matched.toLowerCase())),
+  );
 }
 
 function pickBestSqlCandidate(sqlCandidates: string[] | undefined, preferredNames: string[]): string | undefined {
@@ -474,6 +500,7 @@ function getControllerRequestHandlers(node: GraphNode | undefined): Array<{
   contentTypes: string[];
   redirectTargets: string[];
   fileResponseHints: string[];
+  sessionRouteHints: string[];
   serviceCalls: Array<{ targetType: string; targetName: string; methodName: string }>;
 }> {
   const handlers = node?.metadata?.requestHandlers;
@@ -502,6 +529,9 @@ function getControllerRequestHandlers(node: GraphNode | undefined): Array<{
       fileResponseHints: Array.isArray(handler?.fileResponseHints)
         ? handler.fileResponseHints.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
         : [],
+      sessionRouteHints: Array.isArray(handler?.sessionRouteHints)
+        ? handler.sessionRouteHints.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
+        : [],
       serviceCalls: Array.isArray(handler?.serviceCalls)
         ? handler.serviceCalls
           .filter((value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null)
@@ -519,7 +549,8 @@ function getControllerRequestHandlers(node: GraphNode | undefined): Array<{
       handler.produces.length > 0 ||
       handler.contentTypes.length > 0 ||
       handler.redirectTargets.length > 0 ||
-      handler.fileResponseHints.length > 0,
+      handler.fileResponseHints.length > 0 ||
+      handler.sessionRouteHints.length > 0,
     );
 }
 
@@ -554,6 +585,7 @@ function getHandlerResponseMetadata(node: GraphNode | undefined, action: string 
   contentTypes: string[];
   redirectTargets: string[];
   fileResponseHints: string[];
+  sessionRouteHints: string[];
 } {
   const handlers = getControllerRequestHandlers(node);
   const targetHandler = action
@@ -564,6 +596,7 @@ function getHandlerResponseMetadata(node: GraphNode | undefined, action: string 
     contentTypes: targetHandler?.contentTypes ?? [],
     redirectTargets: targetHandler?.redirectTargets ?? [],
     fileResponseHints: targetHandler?.fileResponseHints ?? [],
+    sessionRouteHints: targetHandler?.sessionRouteHints ?? [],
   };
 }
 
@@ -790,6 +823,23 @@ function collectViewResolverInfo(
   return matched.length > 0 ? matched : resolvers;
 }
 
+function hasImplicitScreenView(snapshot: AnalysisSnapshot, logicalViewNames: string[]): boolean {
+  if (logicalViewNames.length === 0) {
+    return false;
+  }
+  const viewNodes = snapshot.nodes.filter((node) => node.type === "view");
+  return logicalViewNames.some((viewName) => {
+    const normalized = viewName.replace(/^\/+/, "");
+    return viewNodes.some((node) =>
+      node.name === normalized ||
+      node.name.endsWith(`/${normalized}`) ||
+      node.displayName === normalized.split("/").pop() ||
+      node.path?.endsWith(`${normalized}.jsp`) ||
+      node.path?.endsWith(`/${normalized}.jsp`),
+    );
+  });
+}
+
 function resolveLogicalViewPaths(
   logicalViewNames: string[],
   resolvers: Array<{ prefix: string; suffix: string }>,
@@ -841,6 +891,53 @@ function compareRoutes(left: string | undefined, right: string | undefined): num
 
 function pickRepresentativeRoute(routes: string[]): string | undefined {
   return [...uniqueStrings(routes)].sort(compareRoutes)[0];
+}
+
+function pickRepresentativeScreenRoute(
+  routes: string[],
+  viewPath: string | undefined,
+  logicalViewNames: string[],
+): string | undefined {
+  const candidates = uniqueStrings(routes).filter((route) => route !== "/");
+  if (candidates.length === 0) {
+    return undefined;
+  }
+
+  const preferredStems = uniqueStrings([
+    normalizeSymbolStem(shortenPath(viewPath)?.replace(/\.jsp$/i, "")),
+    ...logicalViewNames.map((value) => normalizeSymbolStem(value.split("/").pop())),
+  ].filter(Boolean));
+
+  if (preferredStems.length === 0) {
+    return pickRepresentativeRoute(candidates);
+  }
+
+  const preferredTokens = uniqueStrings([
+    ...tokenizeSymbolParts(shortenPath(viewPath)?.replace(/\.jsp$/i, "")),
+    ...logicalViewNames.flatMap((value) => tokenizeSymbolParts(value.split("/").pop())),
+  ]);
+
+  const scored = candidates
+    .map((route) => {
+      const tail = route.split("/").pop()?.replace(/\.(?:as|do|action)$/i, "");
+      const routeStem = normalizeSymbolStem(tail);
+      const routeTokens = tokenizeSymbolParts(tail);
+      const score = routeStem && preferredStems.includes(routeStem)
+        ? 4
+        : preferredStems.some((stem) => routeStem?.includes(stem ?? "") || stem?.includes(routeStem ?? ""))
+          ? 2
+          : preferredTokens.length > 0
+            ? preferredTokens.filter((token) => routeTokens.includes(token)).length
+            : 0;
+      return { route, score };
+    })
+    .sort((left, right) => right.score - left.score || compareRoutes(left.route, right.route));
+
+  if ((scored[0]?.score ?? 0) <= 0) {
+    return undefined;
+  }
+
+  return scored[0]?.route ?? pickRepresentativeRoute(candidates);
 }
 
 function normalizePathLike(value: string | undefined): string | undefined {
@@ -1844,7 +1941,7 @@ function buildRequestFlowCards(
   const groupedScreenCards = new Map<string, ScreenCard[]>();
   for (const card of screenCards) {
     const groupingKey = card.view || card.layout
-      ? `screen:${card.controllerId ?? card.controller ?? card.title}:${card.action ?? "handler"}:${card.route ?? card.title}`
+      ? `screen:${card.controllerId ?? card.controller ?? card.title}:${card.action ?? "handler"}:${card.route ?? card.title}:${card.action === "handler" ? (card.view ?? card.layout ?? card.id) : ""}`
       : `api:${card.id}`;
     const existing = groupedScreenCards.get(groupingKey) ?? [];
     existing.push(card);
@@ -1862,10 +1959,21 @@ function buildRequestFlowCards(
     const layoutVariants = uniqueStrings(group.map((item) => item.layout));
     const variantCount = Math.max(viewVariants.length, layoutVariants.length, group.length);
     const detailId = `detail:${card.id}`;
-    const routeTitle = card.route ?? card.title;
     const internalCallerCount = card.routeValues.reduce((count, route) => count + (inboundUiActionCounts.get(route) ?? 0), 0);
     const controllerNode = card.controllerId ? findNode(snapshot, card.controllerId) : undefined;
     const resolution = getControllerResolutionInfo(controllerNode);
+    const logicalViewNames = getControllerLogicalViewNames(controllerNode, card.action, card.view);
+    const representativeScreenRoute = viewVariants.length <= 1 && layoutVariants.length <= 1
+      ? pickRepresentativeScreenRoute(card.routeValues, card.view, logicalViewNames)
+      : undefined;
+    const routeTitle = (card.view || card.layout)
+      ? representativeScreenRoute ?? card.route ?? card.title
+      : card.route ?? card.title;
+    const displayRouteValues = card.action === "handler" && representativeScreenRoute
+      ? [representativeScreenRoute]
+      : card.routeValues;
+    const implicitScreenFlow = !isScreenFlow && hasImplicitScreenView(snapshot, logicalViewNames);
+    const effectiveScreenFlow = isScreenFlow || implicitScreenFlow;
     const handlerServiceCalls = getHandlerServiceCalls(controllerNode, card.action);
     const handlerResponseBody = getHandlerResponseBody(controllerNode, card.action);
     const handlerResponseMetadata = getHandlerResponseMetadata(controllerNode, card.action);
@@ -1957,21 +2065,21 @@ function buildRequestFlowCards(
           normalizeSymbolStem(shortTypeName(call.targetName)) === normalizeSymbolStem(primaryDataMatch?.dao),
         )?.methodName}()`
       : describeDependencyEvidence(snapshot, bizNode?.id ?? serviceNode?.id, primaryDataMatch?.dao);
-    const logicalViewNames = getControllerLogicalViewNames(controllerNode, card.action, card.view);
-    const viewResolvers = isScreenFlow
+    const viewResolvers = effectiveScreenFlow
       ? collectViewResolverInfo(snapshot, [card.dispatcherConfig, resolution.configPath].filter(Boolean) as string[])
       : [];
-    const resolvedViewPaths = isScreenFlow ? resolveLogicalViewPaths(logicalViewNames, viewResolvers) : [];
+    const resolvedViewPaths = effectiveScreenFlow ? resolveLogicalViewPaths(logicalViewNames, viewResolvers) : [];
     const viewResolverSummary = viewResolvers.length > 0
       ? viewResolvers.map((resolver) => `${resolver.beanName}: ${resolver.prefix || ""}*${resolver.suffix || ""}`).join(" | ")
       : undefined;
-    const viewSummary = isScreenFlow
-      ? summarizeValueGroup(viewVariants.map((value) => shortenPath(value) ?? value), "views") ?? shortenPath(card.view) ?? "screen"
+    const inferredViewSummary = summarizeValueGroup(logicalViewNames.map((value) => shortenPath(value) ?? value), "views") ?? logicalViewNames[0] ?? "screen";
+    const viewSummary = effectiveScreenFlow
+      ? summarizeValueGroup(viewVariants.map((value) => shortenPath(value) ?? value), "views") ?? shortenPath(card.view) ?? inferredViewSummary
       : undefined;
-    const title = isScreenFlow
+    const title = effectiveScreenFlow
       ? `${routeTitle} -> ${viewSummary}`
       : `${routeTitle} -> Non-screen response`;
-    const responseTags = isScreenFlow
+    const responseTags = effectiveScreenFlow
       ? []
       : inferNonScreenResponseTags({
           route: card.route,
@@ -1983,7 +2091,7 @@ function buildRequestFlowCards(
           contentTypes: handlerResponseMetadata.contentTypes,
           internalCallerCount,
         });
-    const responseKind = isScreenFlow
+    const responseKind = effectiveScreenFlow
       ? undefined
       : inferNonScreenResponseKind({
           route: card.route,
@@ -1998,46 +2106,20 @@ function buildRequestFlowCards(
           redirectTargets: handlerResponseMetadata.redirectTargets,
           fileResponseHints: handlerResponseMetadata.fileResponseHints,
         });
-    const requestFlowCard: RequestFlowCard = {
-      id: card.id,
-      type: isScreenFlow ? "screen_flow" : "api_flow",
-      title,
-      route: card.route,
-      routeValues: card.routeValues,
-      entryPattern: card.entryPattern,
-      dispatcher: card.dispatcher,
-      dispatcherConfig: card.dispatcherConfig,
-      controllerId: card.controllerId,
-      controller: card.controller,
-      controllerPath: card.controllerPath,
-      controllerBeanId: resolution.beanId,
-      controllerClassName: resolution.className,
-      controllerConfigPath: resolution.configPath,
-      handlerMappingPatterns: resolution.handlerMappingPatterns,
-      methodResolverRef: resolution.methodResolverRef,
-      action: card.action,
-      service: displayedService,
-      biz: displayedBiz,
-      dao: primaryDataMatch?.dao,
-      mapper: primaryDataMatch?.mapper,
-      sql: displayedSql,
-      integration: primaryDataMatch?.integration,
-      view: card.view,
-      layout: card.layout,
-      viewVariants,
-      layoutVariants,
-      variantCount,
-      responseType: isScreenFlow ? undefined : "Non-screen response",
-      responseKind,
-      responseTags,
-      logicalViewNames,
-      resolvedViewPaths,
-      viewResolverSummary,
-      confidence: card.confidence,
-      detailId,
-      relatedDataSearchTerm: card.relatedDataSearchTerm,
-    };
-
+    const splitApiRoutes = !effectiveScreenFlow && displayRouteValues.length > 1 && displayRouteValues.every((value) => !value.includes("*"));
+    const routeEntries = splitApiRoutes
+      ? displayRouteValues.map((value) => ({
+          routeTitle: value,
+          routeValues: [value],
+          detailId: `${detailId}:${encodeURIComponent(value)}`,
+          cardId: `${card.id}:${encodeURIComponent(value)}`,
+        }))
+      : [{
+          routeTitle,
+          routeValues: displayRouteValues,
+          detailId,
+          cardId: card.id,
+        }];
     const sections: FlowDetailCard["sections"] = [
       {
         key: "detailEntrySetup",
@@ -2059,7 +2141,8 @@ function buildRequestFlowCards(
           `class: ${resolution.className ?? card.controller ?? "-"}`,
           `controller file: ${card.controllerPath ?? "-"}`,
           `handler method: ${card.action ?? "-"}`,
-          `request mappings: ${card.routeValues.length > 0 ? card.routeValues.join(", ") : routeTitle ?? "-"}`,
+          `request mappings: ${displayRouteValues.length > 0 ? displayRouteValues.join(", ") : routeTitle ?? "-"}`,
+          `session route hints: ${handlerResponseMetadata.sessionRouteHints.join(" | ") || "-"}`,
           `framework route: ${card.dispatcher ?? "-"}`,
         ],
       },
@@ -2137,9 +2220,9 @@ function buildRequestFlowCards(
 
     const detailCard: FlowDetailCard = {
       id: detailId,
-      type: isScreenFlow ? "screen_flow_detail" : "api_flow_detail",
+      type: effectiveScreenFlow ? "screen_flow_detail" : "api_flow_detail",
       title,
-      summary: isScreenFlow
+      summary: effectiveScreenFlow
         ? `${routeTitle} -> ${card.controller ?? "-"} -> ${displayedService ?? "-"} -> ${primaryDataMatch?.dao ?? "-"} -> ${shortenPath(card.view) ?? "screen"}`
         : `${routeTitle} -> ${card.controller ?? "-"} -> ${displayedService ?? "-"} -> ${primaryDataMatch?.dao ?? "-"} -> Non-screen response`,
       confidence: card.confidence,
@@ -2147,18 +2230,84 @@ function buildRequestFlowCards(
       relatedDataSearchTerm: card.relatedDataSearchTerm,
       sections,
     };
-    if (responseKind) {
-      detailCard.responseKind = responseKind;
-    }
-    if (isScreenFlow) {
-      detailCard.viewPaths = viewVariants;
-    }
-    flowDetails.push(detailCard);
-
-    if (isScreenFlow) {
-      screenFlowCards.push(requestFlowCard);
-    } else {
-      apiFlowCards.push(requestFlowCard);
+    for (const entry of routeEntries) {
+      const entryTitle = effectiveScreenFlow
+        ? `${entry.routeTitle} -> ${viewSummary}`
+        : `${entry.routeTitle} -> Non-screen response`;
+      const requestFlowCard: RequestFlowCard = {
+        id: entry.cardId,
+        type: effectiveScreenFlow ? "screen_flow" : "api_flow",
+        title: entryTitle,
+        route: entry.routeTitle,
+        routeValues: entry.routeValues,
+        entryPattern: card.entryPattern,
+        dispatcher: card.dispatcher,
+        dispatcherConfig: card.dispatcherConfig,
+        controllerId: card.controllerId,
+        controller: card.controller,
+        controllerPath: card.controllerPath,
+        controllerBeanId: resolution.beanId,
+        controllerClassName: resolution.className,
+        controllerConfigPath: resolution.configPath,
+        handlerMappingPatterns: resolution.handlerMappingPatterns,
+        methodResolverRef: resolution.methodResolverRef,
+        action: card.action,
+        service: displayedService,
+        biz: displayedBiz,
+        dao: primaryDataMatch?.dao,
+        mapper: primaryDataMatch?.mapper,
+        sql: displayedSql,
+        integration: primaryDataMatch?.integration,
+        view: card.view,
+        layout: card.layout,
+        viewVariants,
+        layoutVariants,
+        variantCount,
+        responseType: effectiveScreenFlow ? undefined : "Non-screen response",
+        responseKind,
+        responseTags,
+        logicalViewNames,
+        resolvedViewPaths,
+        viewResolverSummary,
+        confidence: card.confidence,
+        detailId: entry.detailId,
+        relatedDataSearchTerm: card.relatedDataSearchTerm,
+      };
+      const entryDetailCard: FlowDetailCard = {
+        ...detailCard,
+        id: entry.detailId,
+        title: entryTitle,
+        summary: effectiveScreenFlow
+          ? `${entry.routeTitle} -> ${card.controller ?? "-"} -> ${displayedService ?? "-"} -> ${primaryDataMatch?.dao ?? "-"} -> ${shortenPath(card.view) ?? "screen"}`
+          : `${entry.routeTitle} -> ${card.controller ?? "-"} -> ${displayedService ?? "-"} -> ${primaryDataMatch?.dao ?? "-"} -> Non-screen response`,
+        sections: detailCard.sections.map((section) => {
+          if (section.key !== "detailEntrySetup" && section.key !== "detailRequestPath") {
+            return section;
+          }
+          return {
+            ...section,
+            lines: section.lines.map((line) => {
+              if (section.key === "detailEntrySetup" && line.startsWith("request URL: ")) {
+                return `request URL: ${entry.routeTitle}`;
+              }
+              if (section.key === "detailRequestPath" && line.startsWith("request mappings: ")) {
+                return `request mappings: ${entry.routeValues.join(", ")}`;
+              }
+              return line;
+            }),
+          };
+        }),
+      };
+      if (responseKind) {
+        entryDetailCard.responseKind = responseKind;
+      }
+      if (effectiveScreenFlow) {
+        entryDetailCard.viewPaths = viewVariants;
+        screenFlowCards.push(requestFlowCard);
+      } else {
+        apiFlowCards.push(requestFlowCard);
+      }
+      flowDetails.push(entryDetailCard);
     }
   }
 
@@ -2227,6 +2376,39 @@ function collectInboundUiActionCounts(snapshot: AnalysisSnapshot): Map<string, n
   return counts;
 }
 
+function resolveRequestFlowTarget(
+  target: string,
+  requestFlowCards: RequestFlowCard[],
+): { title: string; detailId: string } | undefined {
+  const rankFlowSpecificity = (left: RequestFlowCard, right: RequestFlowCard): number => (
+    left.routeValues.length - right.routeValues.length ||
+    (left.type === "api_flow" ? -1 : 0) - (right.type === "api_flow" ? -1 : 0) ||
+    compareRoutes(left.route ?? left.title, right.route ?? right.title)
+  );
+
+  const exact = requestFlowCards
+    .filter((flow) => flow.routeValues.includes(target))
+    .sort(rankFlowSpecificity)[0];
+  if (exact) {
+    return { title: exact.title, detailId: exact.detailId };
+  }
+
+  // Some legacy JSPs post to relative action paths like "/sellerDiscountUpdate.as"
+  // while the actual mapped route includes a namespace such as "/promotion/discount/sellerDiscountUpdate.as".
+  const suffixMatches = requestFlowCards
+    .filter((flow) => flow.routeValues.some((route) => route.endsWith(target)))
+    .sort(rankFlowSpecificity);
+  if (suffixMatches.length === 1) {
+    return { title: suffixMatches[0]!.title, detailId: suffixMatches[0]!.detailId };
+  }
+
+  if (suffixMatches.length > 1) {
+    return { title: suffixMatches[0]!.title, detailId: suffixMatches[0]!.detailId };
+  }
+
+  return undefined;
+}
+
 function enrichFlowDetailsWithBrowserEntry(
   snapshot: AnalysisSnapshot,
   flowDetails: FlowDetailCard[],
@@ -2265,7 +2447,11 @@ function enrichFlowDetailsWithBrowserEntry(
       const sourceFlow = viewPathToFlow.get(node.path);
       for (const action of node.metadata.uiActions as Array<Record<string, unknown>>) {
         const target = typeof action.target === "string" ? action.target : undefined;
-        if (!target || !flow.routeValues.includes(target)) {
+        if (!target) {
+          continue;
+        }
+        const resolvedTarget = resolveRequestFlowTarget(target, [flow]);
+        if (!resolvedTarget) {
           continue;
         }
         const key = `${node.path}:${target}`;
@@ -2331,15 +2517,6 @@ function enrichFlowDetailsWithUiActions(
   flowDetails: FlowDetailCard[],
   requestFlowCards: RequestFlowCard[],
 ): FlowDetailCard[] {
-  const flowByTarget = new Map<string, { title: string; detailId: string }>();
-  for (const flow of requestFlowCards) {
-    for (const route of flow.routeValues) {
-      if (!flowByTarget.has(route)) {
-        flowByTarget.set(route, { title: flow.title, detailId: flow.detailId });
-      }
-    }
-  }
-
   return flowDetails.map((detail) => {
     if (detail.type !== "screen_flow_detail" || !detail.viewPaths || detail.viewPaths.length === 0) {
       return detail;
@@ -2355,7 +2532,7 @@ function enrichFlowDetailsWithUiActions(
         `actions detected: ${uiActions.length}`,
       ],
       actions: uiActions.map((action) => {
-        const nextFlow = flowByTarget.get(action.target);
+        const nextFlow = resolveRequestFlowTarget(action.target, requestFlowCards);
         const actionItem: {
           kind: string;
           label: string;
@@ -2686,7 +2863,7 @@ function collectModuleProfileCards(
     .slice(0, 8);
 }
 
-export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData?: FlowReportData): string {
+export function renderInteractiveReportAssets(snapshot: AnalysisSnapshot, flowData?: FlowReportData): InteractiveReportAssets {
   const title = `code2me report - ${snapshot.projectId}`;
   const resolvedFlowData = flowData ?? buildFlowReportData(snapshot);
   const dataFlowCards = resolvedFlowData.dataFlowCards;
@@ -2770,25 +2947,25 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData
       entryPoints: "진입점 수",
       warnings: "경고 수",
       startHere: "시작점 / Start Here",
-      frameworkFlow: "프레임워크 흐름 / Framework Flow",
-      screenFlow: "화면 흐름 / Screen Flows",
-      apiFlow: "논스크린 흐름 / Non-screen Flows",
+      frameworkFlow: "진입 흐름 / Entry Flows",
+      screenFlow: "UI 요청 흐름 / UI Request Flows",
+      apiFlow: "비-UI 요청 흐름 / Non-UI Request Flows",
       flowDetail: "흐름 상세 / Flow Details",
-      supporting: "아키텍처 맥락 / Architecture Context",
+      supporting: "맥락 / Context",
       explore: "탐색 / Explore",
       evidence: "근거 / Evidence",
       raw: "원본 / JSON",
       projectSummary: "프로젝트 요약",
       howToRead: "어떻게 보면 되나",
-      startHereGuide1: "먼저 Framework Flow에서 web.xml 부터 프론트 컨트롤러 설정 흐름을 본다.",
-      startHereGuide2: "그다음 Screen Flows 또는 Non-screen Flows에서 요청 흐름을 고른다.",
-      startHereGuide3: "각 카드의 흐름 상세 보기에서 Controller -> Service -> DAO -> View/Response를 따라간다.",
-      representativeScreenFlows: "대표 화면 흐름",
-      representativeApiFlows: "대표 논스크린 흐름",
-      bootstrapSummary: "부트스트랩 요약",
+      startHereGuide1: "먼저 Entry Flows에서 이 앱이 어떤 진입 패턴과 프론트 컨트롤러로 요청을 받는지 본다.",
+      startHereGuide2: "그다음 UI Request Flows 또는 Non-UI Request Flows에서 요청 흐름을 고른다.",
+      startHereGuide3: "각 카드의 흐름 상세 보기에서 handler -> service -> dao -> view/response를 따라간다.",
+      representativeScreenFlows: "대표 UI 요청 흐름",
+      representativeApiFlows: "대표 비-UI 요청 흐름",
+      bootstrapSummary: "진입 요약",
       keyFlows: "핵심 흐름",
-      screenCount: "화면 흐름 수",
-      apiCount: "논스크린 흐름 수",
+      screenCount: "UI 요청 흐름 수",
+      apiCount: "비-UI 요청 흐름 수",
       dataCount: "데이터 흐름 수",
       libraryAnchor: "공통 모듈 허브",
       libraryClasses: "관련 클래스",
@@ -2801,7 +2978,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData
       moduleProfiles: "모듈 성격",
       moduleProfileLabel: "모듈 프로파일",
       moduleEvidence: "판단 신호",
-      runtimeContext: "런타임 맥락",
+      runtimeContext: "지원 맥락",
       runtimeContextGuide: "이 탭은 현재 흐름 뒤의 추정 데이터 경로와 공통 모듈을 요약한다. 전체 구조 인벤토리는 Explore에서 본다.",
       possibleBackendPath: "추정 경로",
       dataFlowMeaning: "이 카드는 이 요청들 뒤에서 공통으로 보이는 추정 데이터 경로를 요약한다.",
@@ -2842,9 +3019,12 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData
       noItems: "일치하는 항목이 없습니다",
       resultCount: "조회 건수",
       requestUrl: "요청 URL",
+      representativeRequest: "대표 요청",
       entryPattern: "진입 패턴",
       dispatcher: "프론트 컨트롤러",
       dispatcherConfig: "스프링 설정",
+      flowScale: "흐름 규모",
+      additionalConfigs: "추가 설정",
       mappingFile: "매핑 설정 파일",
       handlerMapping: "핸들러 매핑",
       methodResolver: "메서드 리졸버",
@@ -2879,9 +3059,9 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData
       rawSnapshot: "원본 스냅샷",
       largeSnapshotNotice: "대형 결과라서 먼저 일부만 보여준다. 검색/필터를 쓰거나 상세 페이지로 이동할 수 있다.",
       openSnapshotFile: "snapshot.json 열기",
-      screenFlowEmpty: "화면 흐름이 아직 식별되지 않았습니다",
-      apiFlowEmpty: "논스크린 흐름이 아직 식별되지 않았습니다",
-      frameworkFlowEmpty: "프레임워크 흐름이 아직 식별되지 않았습니다",
+      screenFlowEmpty: "UI 요청 흐름이 아직 식별되지 않았습니다",
+      apiFlowEmpty: "비-UI 요청 흐름이 아직 식별되지 않았습니다",
+      frameworkFlowEmpty: "진입 흐름이 아직 식별되지 않았습니다",
       flowDetailEmpty: "먼저 흐름 하나를 선택하면 상세가 표시됩니다",
       structureEmpty: "구조 항목이 없습니다",
       artifactsTab: "분석 근거",
@@ -2893,7 +3073,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData
       detailOutput: "5. View / Response",
       detailUiActions: "6. UI Actions",
       detailConfigs: "7. Related Configs",
-      detailFrameworkBootstrap: "1. Framework Bootstrap",
+      detailFrameworkBootstrap: "1. Entry Bootstrap",
       detailFrameworkRouting: "2. Routing Rules",
       selectedFlow: "선택된 흐름",
       nextFlow: "다음 흐름",
@@ -2927,25 +3107,25 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData
       entryPoints: "Entry Points",
       warnings: "Warnings",
       startHere: "Start Here",
-      frameworkFlow: "Framework Flow",
-      screenFlow: "Screen Flows",
-      apiFlow: "Non-screen Flows",
+      frameworkFlow: "Entry Flows",
+      screenFlow: "UI Request Flows",
+      apiFlow: "Non-UI Request Flows",
       flowDetail: "Flow Details",
-      supporting: "Architecture Context",
+      supporting: "Context",
       explore: "Explore",
       evidence: "Evidence",
       raw: "Raw / JSON",
       projectSummary: "Project Summary",
       howToRead: "How to read this report",
-      startHereGuide1: "Start with Framework Flow to see how web.xml and the front controller route requests.",
-      startHereGuide2: "Then choose a screen flow or a non-screen flow.",
-      startHereGuide3: "Open flow details to follow Controller -> Service -> DAO -> View/Response.",
-      representativeScreenFlows: "Representative Screen Flows",
-      representativeApiFlows: "Representative Non-screen Flows",
-      bootstrapSummary: "Bootstrap Summary",
+      startHereGuide1: "Start with Entry Flows to see how this app accepts requests and routes them through its front controller.",
+      startHereGuide2: "Then choose a UI request flow or a non-UI request flow.",
+      startHereGuide3: "Open flow details to follow handler -> service -> dao -> view/response.",
+      representativeScreenFlows: "Representative UI Request Flows",
+      representativeApiFlows: "Representative Non-UI Request Flows",
+      bootstrapSummary: "Entry Summary",
       keyFlows: "Key Flows",
-      screenCount: "Screen flows",
-      apiCount: "Non-screen flows",
+      screenCount: "UI request flows",
+      apiCount: "Non-UI request flows",
       dataCount: "Data flows",
       libraryAnchor: "Shared Module Hubs",
       libraryClasses: "Classes",
@@ -2958,7 +3138,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData
       moduleProfiles: "Module Profiles",
       moduleProfileLabel: "Module profile",
       moduleEvidence: "Evidence",
-      runtimeContext: "Runtime Context",
+      runtimeContext: "Supporting Context",
       runtimeContextGuide: "This tab summarizes inferred data paths and shared modules behind the current flows. Use Explore for the full structure inventory.",
       possibleBackendPath: "Inferred path",
       dataFlowMeaning: "This card summarizes an inferred data path that these requests appear to share.",
@@ -2999,9 +3179,12 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData
       noItems: "No matching items",
       resultCount: "Results",
       requestUrl: "Request URL",
+      representativeRequest: "Representative Request",
       entryPattern: "Entry Pattern",
       dispatcher: "Front Controller",
       dispatcherConfig: "Spring Config",
+      flowScale: "Flow Scale",
+      additionalConfigs: "Additional Configs",
       mappingFile: "Mapping File",
       handlerMapping: "Handler Mapping",
       methodResolver: "Method Resolver",
@@ -3036,9 +3219,9 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData
       rawSnapshot: "Raw Snapshot",
       largeSnapshotNotice: "Large result detected. Showing a preview first. Use search/filter or the detail pages.",
       openSnapshotFile: "Open snapshot.json",
-      screenFlowEmpty: "No screen flow identified yet",
-      apiFlowEmpty: "No non-screen flow identified yet",
-      frameworkFlowEmpty: "No framework flow identified yet",
+      screenFlowEmpty: "No UI request flow identified yet",
+      apiFlowEmpty: "No non-UI request flow identified yet",
+      frameworkFlowEmpty: "No entry flow identified yet",
       flowDetailEmpty: "Select a flow first to see the detail view",
       structureEmpty: "No structural items",
       artifactsTab: "Evidence",
@@ -3050,7 +3233,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData
       detailOutput: "5. View / Response",
       detailUiActions: "6. UI Actions",
       detailConfigs: "7. Related Configs",
-      detailFrameworkBootstrap: "1. Framework Bootstrap",
+      detailFrameworkBootstrap: "1. Entry Bootstrap",
       detailFrameworkRouting: "2. Routing Rules",
       selectedFlow: "Selected Flow",
       nextFlow: "Next Flow",
@@ -3066,7 +3249,7 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData
     },
   };
 
-  return [
+  const html = [
     "<!doctype html>",
     '<html lang="en">',
     "<head>",
@@ -3198,9 +3381,11 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData
     '      <div id="raw" class="tab-panel hidden"></div>',
     "    </section>",
     "  </div>",
+    '  <script src="report-data.js"></script>',
     "  <script>",
-    `    const report = ${JSON.stringify(reportData)};`,
-    `    const translations = ${JSON.stringify(translations)};`,
+    '    const report = window.__CODE2ME_REPORT__;',
+    '    const translations = window.__CODE2ME_TRANSLATIONS__;',
+    '    if (!report || !translations) { document.body.innerHTML = \'<div style="padding:24px;font-family:IBM Plex Sans,Segoe UI,sans-serif"><h1>code2me report</h1><p>report-data.js could not be loaded.</p></div>\'; throw new Error("report-data.js missing"); }',
     '    const savedLanguage = localStorage.getItem("code2me-lang");',
     '    const savedViewMode = localStorage.getItem("code2me-view-mode");',
     '    const browserLanguage = (navigator.language || "en").toLowerCase().startsWith("ko") ? "ko" : "en";',
@@ -3232,12 +3417,14 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData
     '    function detailControllerName(detail) { const requestSection = (detail.sections || []).find((section) => section.key === "detailRequestPath" || section.key === "detailFrameworkRouting"); const sectionLines = requestSection && Array.isArray(requestSection.lines) ? requestSection.lines : []; const controllerLine = sectionLines.find((line) => line.startsWith("controller: ") || line.startsWith("dispatcher: ")); if (controllerLine && controllerLine.includes(": ")) { return controllerLine.split(": ").slice(1).join(": ") || "-"; } return (detail.summary.split(" -> ")[1]) || "-"; }',
     '    function responseTagLabel(tag) { if (tag === "download") return t("downloadTag"); if (tag === "ajax") return t("ajaxTag"); if (tag === "internal-ui-linked") return t("internalUiLinkedTag"); if (tag === "external-facing candidate") return t("externalFacingCandidateTag"); return tag; }',
     '    function responseKindLabel(kind) { if (kind === "json") return t("responseKindJson"); if (kind === "file") return t("responseKindFile"); if (kind === "redirect") return t("responseKindRedirect"); if (kind === "action") return t("responseKindAction"); if (kind === "unknown") return t("responseKindUnknown"); return kind || t("responseKindUnknown"); }',
-    '    function requestFlowHtml(flow, wide) { const routeText = flow.route || flow.title; const outputLabel = flow.view || flow.layout ? t("view") : t("response"); const outputValue = flow.view || flow.layout || flow.responseType || "-"; const chain = \'<div class="flow-chain">\' + [flowStep(t("requestUrl"), routeText), flowStep(t("dispatcher"), flow.dispatcher || "-"), flowStep(t("controller"), flow.controller || "-"), flowStep(outputLabel, outputValue)].join(\'<span class="flow-arrow">→</span>\') + "</div>"; const routeDetails = (flow.routeValues || []).length > 2 ? \'<details class="details"><summary>\' + esc(t("showAllRoutes") + " (" + flow.routeValues.length + ")") + \'</summary><div class="details-body">\' + flow.routeValues.map((value) => \'<div class="secondary">\' + esc(value) + "</div>").join("") + "</div></details>" : ""; const responseKind = flow.responseKind ? [esc(t("responseKindLabel") + ": " + responseKindLabel(flow.responseKind))] : []; const responseTags = Array.isArray(flow.responseTags) && flow.responseTags.length > 0 ? [esc(t("responseTagsLabel") + ": " + flow.responseTags.map(responseTagLabel).join(", "))] : []; const integration = Array.isArray(flow.integration) && flow.integration.length > 0 ? [esc(t("integration") + ": " + flow.integration.join(", "))] : []; const lines = [esc(t("entryPattern") + ": " + (flow.entryPattern || "-")), esc(t("dispatcherConfig") + ": " + (flow.dispatcherConfig || "-")), esc(t("controllerFile") + ": " + (flow.controllerPath || "-")), esc(t("actionMethod") + ": " + (flow.action || "-")), esc(t("service") + ": " + (flow.service || "-")), esc(t("biz") + ": " + (flow.biz || "-")), esc(t("dao") + ": " + (flow.dao || "-")), esc(t("mapper") + ": " + (flow.mapper || "-")), esc(t("sql") + ": " + (flow.sql || "-")), ...integration, ...responseKind, ...responseTags, esc("variants: " + String(flow.variantCount || 1))]; const extraPills = (flow.responseKind ? [pill(responseKindLabel(flow.responseKind), "tag-response-kind")] : []).concat(Array.isArray(flow.responseTags) ? flow.responseTags.map((tag) => pill(responseTagLabel(tag), "tag-" + tag.replace(/[^a-z0-9]+/gi, "-").toLowerCase())) : []); const actions = [\'<button class="action-btn" type="button" data-open-flow-detail="\' + esc(flow.detailId) + \'">\' + esc(t("openFlowDetail")) + "</button>"]; if (flow.relatedDataSearchTerm) { actions.push(\'<button class="action-btn" type="button" data-open-data-flow="\' + esc(flow.relatedDataSearchTerm) + \'">\' + esc(t("openDataFlow")) + "</button>"); } const selectedClass = state.selectedFlowId === flow.detailId ? " selected" : ""; return \'<div class="item\' + selectedClass + (wide ? " wide" : "") + \'"><div class="item-top"><div><strong>\' + esc(flow.title) + \'</strong></div><div class="pill-row">\' + [pill(flow.type), ...extraPills, pill(confidenceLabel(flow.confidence), "conf-" + flow.confidence)].join("") + \'</div></div>\' + chain + routeDetails + lines.map((line) => \'<div class="secondary">\' + line + "</div>").join("") + \'<div class="action-row">\' + actions.join("") + "</div></div>"; }',
-    '    function frameworkFlowHtml(flow, wide) { const chain = \'<div class="flow-chain">\' + [flowStep(t("entryPattern"), flow.entryPattern || "-"), flowStep(t("dispatcher"), flow.dispatcher || "-"), flowStep(t("dispatcherConfig"), flow.dispatcherConfig || "-"), flowStep(t("screenFlow"), String(flow.screenFlowCount) + " / " + t("apiFlow") + " " + String(flow.apiFlowCount))].join(\'<span class="flow-arrow">→</span>\') + "</div>"; const lines = [esc(t("requestUrl") + ": " + ((flow.sampleRoutes || []).slice(0, 3).join(", ") || "-")), esc(t("dispatcherConfig") + ": " + (flow.contextConfigs || []).join(", "))]; const actions = \'<div class="action-row"><button class="action-btn" type="button" data-open-flow-detail="\' + esc(flow.detailId) + \'">\' + esc(t("openFlowDetail")) + "</button></div>"; const selectedClass = state.selectedFlowId === flow.detailId ? " selected" : ""; return \'<div class="item\' + selectedClass + (wide ? " wide" : "") + \'"><div class="item-top"><div><strong>\' + esc(flow.title) + \'</strong></div><div class="pill-row">\' + [pill(flow.type), pill(confidenceLabel(flow.confidence), "conf-" + flow.confidence)].join("") + \'</div></div>\' + chain + lines.map((line) => \'<div class="secondary">\' + line + "</div>").join("") + actions + "</div>"; }',
+    '    function matchingRouteAlias(flow) { const routes = Array.isArray(flow.routeValues) ? flow.routeValues.filter(Boolean) : []; if (!state.search || routes.length === 0) return ""; const normalizedSearch = String(state.search || "").trim().toLowerCase(); if (!normalizedSearch) return ""; const primaryRoute = String(flow.route || "").toLowerCase(); const matched = routes.find((value) => String(value).toLowerCase().includes(normalizedSearch)); if (!matched) return ""; if (primaryRoute && String(matched).toLowerCase() === primaryRoute) return ""; return matched; }',
+    '    function displayFlowTitle(flow, matchedAlias) { if (!matchedAlias) return flow.title; if (typeof flow.title !== "string") return matchedAlias; const arrowIndex = flow.title.indexOf(" -> "); if (arrowIndex < 0) return matchedAlias; return matchedAlias + flow.title.slice(arrowIndex); }',
+    '    function requestFlowHtml(flow, wide) { const matchedAlias = matchingRouteAlias(flow); const routeText = matchedAlias || flow.route || flow.title; const displayTitle = displayFlowTitle(flow, matchedAlias); const outputLabel = flow.view || flow.layout ? t("view") : t("response"); const outputValue = flow.view || flow.layout || flow.responseType || "-"; const chain = \'<div class="flow-chain">\' + [flowStep(t("requestUrl"), routeText), flowStep(t("dispatcher"), flow.dispatcher || "-"), flowStep(t("controller"), flow.controller || "-"), flowStep(outputLabel, outputValue)].join(\'<span class="flow-arrow">→</span>\') + "</div>"; const routeDetails = (flow.routeValues || []).length > 2 ? \'<details class="details"><summary>\' + esc(t("showAllRoutes") + " (" + flow.routeValues.length + ")") + \'</summary><div class="details-body">\' + flow.routeValues.map((value) => \'<div class="secondary">\' + esc(value) + "</div>").join("") + "</div></details>" : ""; const responseKind = flow.responseKind ? [esc(t("responseKindLabel") + ": " + responseKindLabel(flow.responseKind))] : []; const responseTags = Array.isArray(flow.responseTags) && flow.responseTags.length > 0 ? [esc(t("responseTagsLabel") + ": " + flow.responseTags.map(responseTagLabel).join(", "))] : []; const integration = Array.isArray(flow.integration) && flow.integration.length > 0 ? [esc(t("integration") + ": " + flow.integration.join(", "))] : []; const matchedAliasLine = matchedAlias ? [esc("matched route alias: " + matchedAlias)] : []; const lines = matchedAliasLine.concat([esc(t("entryPattern") + ": " + (flow.entryPattern || "-")), esc(t("dispatcherConfig") + ": " + (flow.dispatcherConfig || "-")), esc(t("controllerFile") + ": " + (flow.controllerPath || "-")), esc(t("actionMethod") + ": " + (flow.action || "-")), esc(t("service") + ": " + (flow.service || "-")), esc(t("biz") + ": " + (flow.biz || "-")), esc(t("dao") + ": " + (flow.dao || "-")), esc(t("mapper") + ": " + (flow.mapper || "-")), esc(t("sql") + ": " + (flow.sql || "-")), ...integration, ...responseKind, ...responseTags, esc("variants: " + String(flow.variantCount || 1))]); const extraPills = (flow.responseKind ? [pill(responseKindLabel(flow.responseKind), "tag-response-kind")] : []).concat(Array.isArray(flow.responseTags) ? flow.responseTags.map((tag) => pill(responseTagLabel(tag), "tag-" + tag.replace(/[^a-z0-9]+/gi, "-").toLowerCase())) : []); const actions = [\'<button class="action-btn" type="button" data-open-flow-detail="\' + esc(flow.detailId) + \'">\' + esc(t("openFlowDetail")) + "</button>"]; if (flow.relatedDataSearchTerm) { actions.push(\'<button class="action-btn" type="button" data-open-data-flow="\' + esc(flow.relatedDataSearchTerm) + \'">\' + esc(t("openDataFlow")) + "</button>"); } const selectedClass = state.selectedFlowId === flow.detailId ? " selected" : ""; return \'<div class="item\' + selectedClass + (wide ? " wide" : "") + \'"><div class="item-top"><div><strong>\' + esc(displayTitle) + \'</strong></div><div class="pill-row">\' + [pill(flow.type), ...extraPills, pill(confidenceLabel(flow.confidence), "conf-" + flow.confidence)].join("") + \'</div></div>\' + chain + routeDetails + lines.map((line) => \'<div class="secondary">\' + line + "</div>").join("") + \'<div class="action-row">\' + actions.join("") + "</div></div>"; }',
+    '    function frameworkFlowHtml(flow, wide) { const primaryConfig = flow.dispatcherConfig || ((flow.contextConfigs || [])[0]) || "-"; const representativeRoute = ((flow.sampleRoutes || [])[0]) || ""; const allConfigs = Array.isArray(flow.contextConfigs) ? flow.contextConfigs.filter(Boolean) : []; const extraConfigCount = Math.max(0, allConfigs.filter((value) => value !== primaryConfig).length); const chain = \'<div class="flow-chain">\' + [flowStep(t("entryPattern"), flow.entryPattern || "-"), flowStep(t("dispatcher"), flow.dispatcher || "-"), flowStep(t("dispatcherConfig"), primaryConfig), flowStep(t("flowScale"), t("screenFlow") + " " + String(flow.screenFlowCount) + " / " + t("apiFlow") + " " + String(flow.apiFlowCount))].join(\'<span class="flow-arrow">→</span>\') + "</div>"; const lines = [esc(t("entryPattern") + ": " + (flow.entryPattern || "-")), esc(t("dispatcher") + ": " + (flow.dispatcher || "-")), esc(t("dispatcherConfig") + ": " + primaryConfig), esc(t("flowScale") + ": " + t("screenFlow") + " " + String(flow.screenFlowCount) + " / " + t("apiFlow") + " " + String(flow.apiFlowCount))]; if (representativeRoute) lines.push(esc(t("representativeRequest") + ": " + representativeRoute)); if (extraConfigCount > 0) lines.push(esc(t("additionalConfigs") + ": +" + String(extraConfigCount))); const actions = \'<div class="action-row"><button class="action-btn" type="button" data-open-flow-detail="\' + esc(flow.detailId) + \'">\' + esc(t("openFlowDetail")) + "</button></div>"; const selectedClass = state.selectedFlowId === flow.detailId ? " selected" : ""; return \'<div class="item\' + selectedClass + (wide ? " wide" : "") + \'"><div class="item-top"><div><strong>\' + esc(flow.title) + \'</strong></div><div class="pill-row">\' + [pill(confidenceLabel(flow.confidence), "conf-" + flow.confidence)].join("") + \'</div></div>\' + chain + lines.map((line) => \'<div class="secondary">\' + line + "</div>").join("") + actions + "</div>"; }',
     '    function sectionHtml(title, inner, useGrid) { const modeClass = useGrid ? (state.viewMode === "cards" ? "grid" : "wide-list") : "list"; return \'<div><h3 class="section-title">\' + esc(title) + \'</h3><div class="\' + modeClass + \'">\' + inner + "</div></div>"; }',
     '    function titleWithCount(title, count) { return title + " (" + count + ")"; }',
     '    function renderList(items, renderItem) { if (!items.length) { return \'<div class="empty">\' + esc(t("noItems")) + "</div>"; } return items.map(renderItem).join(""); }',
-    '    function getSearchText(record) { if (searchCache.has(record)) return searchCache.get(record); const skipKeys = new Set(["evidence", "payload", "metadata"]); const parts = []; const visit = (value, depth) => { if (value == null || depth > 2) return; if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") { parts.push(String(value)); return; } if (Array.isArray(value)) { value.slice(0, 12).forEach((item) => visit(item, depth + 1)); return; } if (typeof value === "object") { Object.entries(value).forEach(([key, entry]) => { if (!skipKeys.has(key)) visit(entry, depth + 1); }); } }; visit(record, 0); const haystack = parts.join(" ").toLowerCase(); searchCache.set(record, haystack); return haystack; }',
+    '    function getSearchText(record) { if (searchCache.has(record)) return searchCache.get(record); const add = (parts, value) => { if (value == null) return; if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") { parts.push(String(value)); return; } if (Array.isArray(value)) { value.forEach((item) => add(parts, item)); } }; const type = typeof record?.type === "string" ? record.type : ""; const parts = []; if (type === "screen_flow" || type === "api_flow" || type === "entry_flow") { add(parts, [record.title, record.route, record.routeValues, record.controller, record.controllerPath, record.action, record.view, record.layout, record.responseType, record.responseKind, record.responseTags]); } else if (type === "screen_flow_detail" || type === "api_flow_detail") { add(parts, [record.title, record.summary, record.viewPaths, record.responseKind, record.responseTags]); if (Array.isArray(record.sections)) { record.sections.forEach((section) => { if (!Array.isArray(section?.lines)) return; section.lines.forEach((line) => { const text = String(line || ""); if (/^handler mapping:/i.test(text)) return; add(parts, text); }); }); } } else if (type === "framework_flow_detail") { add(parts, [record.title, record.summary]); } else if (type === "data_flow") { add(parts, [record.controller, record.service, record.biz, record.dao, record.mapper, record.sql, record.evidenceLabel, record.integration]); } else { const skipKeys = new Set(["evidence", "payload", "metadata"]); const visit = (value, depth) => { if (value == null || depth > 2) return; if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") { parts.push(String(value)); return; } if (Array.isArray(value)) { value.slice(0, 12).forEach((item) => visit(item, depth + 1)); return; } if (typeof value === "object") { Object.entries(value).forEach(([key, entry]) => { if (!skipKeys.has(key)) visit(entry, depth + 1); }); } }; visit(record, 0); } const haystack = parts.join(" ").toLowerCase(); searchCache.set(record, haystack); return haystack; }',
     '    function matchesCommon(record) { if (state.search && !getSearchText(record).includes(state.search)) return false; if (state.type && record.type !== state.type) return false; if (state.confidence && record.confidence !== state.confidence) return false; return true; }',
     '    function invalidatePanelCache() { panelCache.clear(); }',
     '    function updateStaticText() {',
@@ -3372,6 +3559,15 @@ export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData
     "</body>",
     "</html>",
   ].join("\n");
+  const dataScript = [
+    `window.__CODE2ME_REPORT__ = ${JSON.stringify(reportData)};`,
+    `window.__CODE2ME_TRANSLATIONS__ = ${JSON.stringify(translations)};`,
+  ].join("\n");
+  return { html, dataScript };
+}
+
+export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData?: FlowReportData): string {
+  return renderInteractiveReportAssets(snapshot, flowData).html;
 }
 
 function renderStandalonePage(options: {

@@ -154,6 +154,25 @@ describe("interactive report entry flow synthesis", () => {
     expect(html).toContain('t("evidenceBasis") + ": " + (card.evidenceLabel || t("notConfirmed"))');
   });
 
+  it("compresses entry summary cards instead of dumping all routes and configs", () => {
+    const html = renderInteractiveHtmlReport({
+      projectId: "framework-summary-project",
+      profileId: "legacy-java-ee",
+      createdAt: "2026-04-13T00:00:00.000Z",
+      nodes: [],
+      edges: [],
+      entryPoints: [],
+      warnings: [],
+      artifacts: [],
+    });
+
+    expect(html).toContain('t("representativeRequest")');
+    expect(html).toContain('t("additionalConfigs")');
+    expect(html).not.toContain('((flow.sampleRoutes || []).slice(0, 3).join(", ") || "-")');
+    expect(html).not.toContain('(flow.contextConfigs || []).join(", ")');
+    expect(html).not.toContain('[pill(flow.type), pill(confidenceLabel(flow.confidence), "conf-" + flow.confidence)]');
+  });
+
   it("marks weak inferred paths hidden by default and keeps direct sql-backed paths visible", () => {
     const reportWeak = extractReportData(renderInteractiveHtmlReport({
       projectId: "weak-data-path-project",
@@ -2811,7 +2830,7 @@ describe("interactive report entry flow synthesis", () => {
     expect(report.screenFlowCards).toHaveLength(1);
     expect(report.apiFlowCards).toHaveLength(1);
     expect(report.flowDetails.length).toBeGreaterThanOrEqual(3);
-    expect(html).toContain("Framework Flow");
+    expect(html).toContain("Entry Flows");
     expect(html).toContain("Flow Details");
     expect(html).toContain("data-open-flow-detail");
   });

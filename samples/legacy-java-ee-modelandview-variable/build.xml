@@ -1,0 +1,6 @@
+<project name="legacy-modelandview-variable" default="package">
+  <target name="compile" />
+  <target name="package">
+    <war destfile="dist/legacy-modelandview-variable.war" />
+  </target>
+</project>

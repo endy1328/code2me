@@ -111,7 +111,13 @@ export async function analyzeProject(input: AnalyzeProjectInput): Promise<Analyz
     percent: 95,
     message: "Rendering and writing output files",
   });
-  const outputPaths = await writeSnapshot(input.projectRoot, input.projectId, snapshot);
+  const outputPaths = await writeSnapshot(input.projectRoot, input.projectId, snapshot, (event) => {
+    input.onProgress?.({
+      phase: "write",
+      percent: event.percent,
+      message: event.message,
+    });
+  });
 
   input.onProgress?.({
     phase: "done",

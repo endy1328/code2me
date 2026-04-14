@@ -33,6 +33,15 @@ function toModuleRelativeViewName(file: string): string {
   if (file.includes("/WEB-INF/jsp/")) {
     return file.split("/WEB-INF/jsp/")[1] ?? file;
   }
+  if (file.includes("src/main/webapp/")) {
+    return file.split("src/main/webapp/")[1] ?? file;
+  }
+  if (file.includes("src/webapp/")) {
+    return file.split("src/webapp/")[1] ?? file;
+  }
+  if (file.includes("WebContent/")) {
+    return file.split("WebContent/")[1] ?? file;
+  }
   return file;
 }
 

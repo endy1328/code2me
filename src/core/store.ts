@@ -7,6 +7,7 @@ import {
   renderEvidenceHtmlReport,
   renderExploreHtmlReport,
   renderInteractiveHtmlReport,
+  renderInteractiveReportAssets,
   renderMarkdownSummary,
   renderRawHtmlReport,
   renderSplitFlowHtmlReports,
@@ -18,6 +19,7 @@ export interface OutputPaths {
   historyPath: string;
   summaryPath: string;
   reportPath: string;
+  reportDataPath: string;
   explorePath: string;
   evidencePath: string;
   rawPath: string;
@@ -30,6 +32,7 @@ export interface OutputPaths {
   internalHistoryPath: string;
   internalSummaryPath: string;
   internalReportPath: string;
+  internalReportDataPath: string;
   internalExplorePath: string;
   internalEvidencePath: string;
   internalRawPath: string;
@@ -38,6 +41,11 @@ export interface OutputPaths {
   internalFlowDetailsPath: string;
   internalArchitecturePath: string;
   targetWriteError?: string;
+}
+
+export interface WriteSnapshotProgressEvent {
+  percent: number;
+  message: string;
 }
 
 function sanitizeProjectKey(projectId: string): string {
@@ -64,6 +72,7 @@ export function getOutputPaths(projectRoot: string, projectId: string): OutputPa
     historyPath: join(projectDir, "history.jsonl"),
     summaryPath: join(projectDir, "summary.md"),
     reportPath: join(projectDir, "report.html"),
+    reportDataPath: join(projectDir, "report-data.js"),
     explorePath: join(projectDir, "explore.html"),
     evidencePath: join(projectDir, "evidence.html"),
     rawPath: join(projectDir, "raw.html"),
@@ -76,6 +85,7 @@ export function getOutputPaths(projectRoot: string, projectId: string): OutputPa
     internalHistoryPath: join(internalProjectDir, "history.jsonl"),
     internalSummaryPath: join(internalProjectDir, "summary.md"),
     internalReportPath: join(internalProjectDir, "report.html"),
+    internalReportDataPath: join(internalProjectDir, "report-data.js"),
     internalExplorePath: join(internalProjectDir, "explore.html"),
     internalEvidencePath: join(internalProjectDir, "evidence.html"),
     internalRawPath: join(internalProjectDir, "raw.html"),
@@ -92,6 +102,7 @@ async function writeOutputSet(
   historyPath: string,
   summaryPath: string,
   reportPath: string,
+  reportDataPath: string,
   explorePath: string,
   evidencePath: string,
   rawPath: string,
@@ -102,6 +113,7 @@ async function writeOutputSet(
   payload: string,
   summary: string,
   report: string,
+  reportData: string,
   explore: string,
   evidence: string,
   raw: string,
@@ -115,6 +127,7 @@ async function writeOutputSet(
   await writeFile(snapshotPath, payload + "\n", "utf8");
   await writeFile(summaryPath, summary, "utf8");
   await writeFile(reportPath, report, "utf8");
+  await writeFile(reportDataPath, reportData, "utf8");
   await writeFile(explorePath, explore, "utf8");
   await writeFile(evidencePath, evidence, "utf8");
   await writeFile(rawPath, raw, "utf8");
@@ -125,12 +138,33 @@ async function writeOutputSet(
   await appendFile(historyPath, historyRecord + "\n", "utf8");
 }
 
-export async function writeSnapshot(projectRoot: string, projectId: string, snapshot: AnalysisSnapshot): Promise<OutputPaths> {
+export async function writeSnapshot(
+  projectRoot: string,
+  projectId: string,
+  snapshot: AnalysisSnapshot,
+  onProgress?: (event: WriteSnapshotProgressEvent) => void,
+): Promise<OutputPaths> {
   const outputPaths = getOutputPaths(projectRoot, projectId);
+  onProgress?.({
+    percent: 95,
+    message: "Serializing snapshot payload",
+  });
   const payload = JSON.stringify(snapshot, null, 2);
+
+  onProgress?.({
+    percent: 96,
+    message: "Preparing report data",
+  });
   const summary = renderMarkdownSummary(snapshot);
   const flowData = prepareFlowReportData(snapshot);
-  const report = renderInteractiveHtmlReport(snapshot, flowData);
+
+  onProgress?.({
+    percent: 97,
+    message: "Rendering HTML reports",
+  });
+  const reportAssets = renderInteractiveReportAssets(snapshot, flowData);
+  const report = reportAssets.html;
+  const reportData = reportAssets.dataScript;
   const explore = renderExploreHtmlReport(snapshot);
   const evidence = renderEvidenceHtmlReport(snapshot);
   const raw = renderRawHtmlReport(snapshot);
@@ -144,12 +178,17 @@ export async function writeSnapshot(projectRoot: string, projectId: string, snap
     warningCount: snapshot.warnings.length,
   });
 
+  onProgress?.({
+    percent: 98,
+    message: "Writing internal output files",
+  });
   await writeOutputSet(
     outputPaths.internalProjectDir,
     outputPaths.internalSnapshotPath,
     outputPaths.internalHistoryPath,
     outputPaths.internalSummaryPath,
     outputPaths.internalReportPath,
+    outputPaths.internalReportDataPath,
     outputPaths.internalExplorePath,
     outputPaths.internalEvidencePath,
     outputPaths.internalRawPath,
@@ -160,6 +199,7 @@ export async function writeSnapshot(projectRoot: string, projectId: string, snap
     payload,
     summary,
     report,
+    reportData,
     explore,
     evidence,
     raw,
@@ -171,12 +211,17 @@ export async function writeSnapshot(projectRoot: string, projectId: string, snap
   );
 
   try {
+    onProgress?.({
+      percent: 99,
+      message: "Writing project output files",
+    });
     await writeOutputSet(
       outputPaths.projectDir,
       outputPaths.snapshotPath,
       outputPaths.historyPath,
       outputPaths.summaryPath,
       outputPaths.reportPath,
+      outputPaths.reportDataPath,
       outputPaths.explorePath,
       outputPaths.evidencePath,
       outputPaths.rawPath,
@@ -187,6 +232,7 @@ export async function writeSnapshot(projectRoot: string, projectId: string, snap
       payload,
       summary,
       report,
+      reportData,
       explore,
       evidence,
       raw,

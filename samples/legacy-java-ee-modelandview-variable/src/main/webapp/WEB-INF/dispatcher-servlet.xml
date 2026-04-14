@@ -1,0 +1,7 @@
+<beans>
+  <bean id="realContentAction" class="com.example.legacy.web.RealContentAction" />
+  <bean class="org.springframework.web.servlet.view.InternalResourceViewResolver">
+    <property name="prefix" value="/" />
+    <property name="suffix" value=".jsp" />
+  </bean>
+</beans>

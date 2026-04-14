@@ -51,8 +51,8 @@ describe("Legacy Java EE vertical slice", () => {
     expect(internalReportHtml).toContain("Interactive analysis report");
     expect(reportHtml).toContain("code2me Analysis Summary");
     expect(reportHtml).toContain("/sample/list.as");
-    expect(reportHtml).toContain("Framework Flow");
-    expect(reportHtml).toContain("Screen Flows");
+    expect(reportHtml).toContain("Entry Flows");
+    expect(reportHtml).toContain("UI Request Flows");
     expect(reportHtml).toContain("Flow Details");
     expect(reportHtml).toContain("*.do");
     expect(reportHtml).toContain("dispatcher-servlet.xml");
@@ -420,6 +420,67 @@ describe("Legacy Java EE vertical slice", () => {
     expect(outputSection?.lines?.some((line) => line.includes("legacyViewResolver: /WEB-INF/views/*.jsp"))).toBe(true);
     expect(outputSection?.lines?.some((line) => line.includes("/WEB-INF/jsp/admin/overview.jsp"))).toBe(true);
     expect(outputSection?.lines?.some((line) => line.includes("/WEB-INF/views/admin/overview.jsp"))).toBe(true);
+  });
+
+  it("keeps ModelAndView local-string views searchable as screen flows with UI actions", async () => {
+    const projectRoot = resolve("samples/legacy-java-ee-modelandview-variable");
+    const result = await analyzeProject({
+      projectRoot,
+      projectId: "legacy-java-ee-modelandview-variable",
+      profile: new LegacyJavaEeProfile(),
+    });
+
+    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
+    const payload = extractReportPayload(reportHtml) as {
+      screenFlowCards: Array<{
+        route?: string;
+      }>;
+      flowDetails: Array<{
+        title: string;
+        sections: Array<{
+          key: string;
+          lines?: string[];
+          actions?: Array<{
+            target: string;
+          }>;
+        }>;
+      }>;
+    };
+
+    expect(payload.screenFlowCards.some((card) => card.route === "/product/content/realList.as")).toBe(true);
+    const detail = payload.flowDetails.find((item) => item.title.includes("/product/content/realList.as"));
+    const outputSection = detail?.sections.find((section) => section.key === "detailOutput");
+    const uiSection = detail?.sections.find((section) => section.key === "detailUiActions");
+    expect(outputSection?.lines).toContain("logical view: product/content/contentRealList");
+    expect(outputSection?.lines?.some((line) => line.includes("/product/content/contentRealList.jsp"))).toBe(true);
+    expect(uiSection?.actions?.some((action) => action.target === "/product/content/detail.as")).toBe(true);
+  });
+
+  it("tracks nested helper-function URL arguments into JSP UI actions", async () => {
+    const projectRoot = resolve("samples/legacy-java-ee-modelandview-variable");
+    const result = await analyzeProject({
+      projectRoot,
+      projectId: "legacy-java-ee-modelandview-variable-helper",
+      profile: new LegacyJavaEeProfile(),
+    });
+
+    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
+    const payload = extractReportPayload(reportHtml) as {
+      flowDetails: Array<{
+        title: string;
+        sections: Array<{
+          key: string;
+          actions?: Array<{
+            target: string;
+          }>;
+        }>;
+      }>;
+    };
+
+    const detail = payload.flowDetails.find((item) => item.title.includes("/product/content/realList.as"));
+    const uiSection = detail?.sections.find((section) => section.key === "detailUiActions");
+    expect(uiSection?.actions?.some((action) => action.target === "/product/content/detail.as")).toBe(true);
+    expect(uiSection?.actions?.some((action) => action.target === "/")).toBe(false);
   });
 
   it("keeps multiple contextConfigLocation entries visible in framework and request details for env/locale branches", async () => {

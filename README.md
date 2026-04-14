@@ -2,7 +2,7 @@
 
 `code2me`는 레거시 애플리케이션을 정적으로 분석해 `요청 URL -> Controller -> Service -> DAO -> View/Response` 흐름을 읽기 쉬운 보고서로 재구성하는 CLI 도구다.
 
-현재 구현은 `TypeScript + Node.js` 기반이며, 첫 번째 분석 프로파일로 `Legacy Java EE`를 지원한다.
+현재 구현은 `TypeScript + Node.js` 기반이며, 현재 지원 프로파일은 `Legacy Java EE`, `action-family-legacy-web` 두 가지다.
 
 현재 리포트의 primary persona는 `유지보수/온보딩 담당자`이며, secondary persona는 `아키텍처 리뷰어`다.
 
@@ -11,18 +11,26 @@
 - CLI 코어, Legacy Java EE 어댑터, 샘플 입력, 테스트, 인터랙티브 HTML 리포트가 포함되어 있다.
 - 현재는 프레임워크 부트스트랩 흐름, 화면/API 요청 흐름, 메서드 단위 concrete flow, JSP UI action 추적, 추정 데이터 경로 요약, 대형 리포트 분리 출력까지 포함한 첫 구현을 마친 상태다.
 
+## Product Status
+
+- 현재 지원 프로파일: `Legacy Java EE`, `action-family-legacy-web`
+- primary persona: `유지보수/온보딩 담당자`
+- secondary persona: `아키텍처 리뷰어`
+- 현재 확장 작업 1순위: `action-family-legacy-web` 2차 범위
+- 현재 작업 우선순위와 검증 상태는 [EXECUTION_TRACKER.md](/home/u24/projects/code2me/EXECUTION_TRACKER.md:1)에서 본다.
+
 ## Repository Layout
 
 - `src/`: 분석 코어, 어댑터, 리포트 렌더러
 - `tests/`: 회귀 테스트
-- `samples/`: Legacy Java EE 샘플 프로젝트
+- `samples/`: Legacy Java EE, action-family 샘플 프로젝트
 - `dev_docs/`: 요구사항, 설계, 개발, 테스트 메모
 
 ## Current Implementation
 
 - `TypeScript + Node.js` 기반 CLI-first 구조다.
-- 현재 구현 범위는 `Legacy Java EE` 프로파일, persistence/view/layout 확장 어댑터, 프레임워크 흐름/화면 흐름/API 흐름/흐름 상세/아키텍처 맥락 리포트다.
-- 샘플 입력은 `samples/legacy-java-ee-minimal`, `samples/legacy-java-ee-action-mapping`, `samples/legacy-java-ee-bean-name-mapping`, `samples/legacy-java-ee-entry-multi-dispatcher`, `samples/legacy-java-ee-persistence-priority`, `samples/legacy-java-ee-mixed-web-api`, `samples/legacy-java-ee-view-resolver-variants`, `samples/legacy-java-ee-env-branch`, `samples/legacy-java-ee-sitemesh-pattern`, `samples/legacy-java-ee-sitemesh-alias`, `samples/legacy-java-ee-sitemesh-direct`, `samples/legacy-java-ee-sitemesh-excludes` 아래에 있다.
+- 현재 구현 범위는 `Legacy Java EE`와 `action-family-legacy-web` 프로파일, persistence/view/layout 확장 어댑터, 프레임워크 흐름/화면 흐름/API 흐름/흐름 상세/아키텍처 맥락 리포트다.
+- 샘플 입력은 `samples/legacy-java-ee-*`, `samples/action-family-legacy-web-struts-minimal`, `samples/action-family-legacy-web-stripes-minimal` 아래에 있다.
 - 분석 결과는 분석 대상 프로젝트 아래 `.code2me/` 디렉터리에 저장되고, 동시에 현재 프로그램 내부 `.code2me-result/projects/<project-key>/`에도 미러 저장된다.
 
 ## Requirements
@@ -60,6 +68,8 @@ NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-sitemesh-pa
 NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-sitemesh-alias
 NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-sitemesh-direct
 NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-sitemesh-excludes
+NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/action-family-legacy-web-struts-minimal
+NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/action-family-legacy-web-stripes-minimal
 ```
 
 특정 프로파일을 명시하거나, 고급 사용자라면 adapter 묶음을 override할 수도 있다.
@@ -67,6 +77,7 @@ NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-sitemesh-ex
 ```bash
 NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-minimal --profile legacy-java-ee
 NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-minimal --profile legacy-java-ee --adapter web-xml,spring-xml,java-source-basic
+NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/action-family-legacy-web-struts-minimal --profile action-family-legacy-web
 NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- --list-profiles
 NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- --list-adapters
 ```
@@ -96,6 +107,16 @@ xdg-open samples/legacy-java-ee-minimal/.code2me/report.html
 
 CLI JSON 출력에는 선택된 `profileId` 외에도 `profileDetection.score`, `profileDetection.reasons`, `internalOutputDir`, `targetWriteError`가 포함된다. 대상 프로젝트 쓰기가 실패하면 기본 `outputDir`, `reportPath` 등은 내부 미러 경로를 가리키고, 원래 대상 경로는 `targetOutputDir`, `targetReportPath` 등으로 별도 노출된다.
 
+## How To Use
+
+- 기본 사용 흐름:
+  1. `npm install`
+  2. `npm run check`, `npm test`
+  3. `npm run analyze -- <project-root>`
+  4. `.code2me/report.html` 확인
+- 현재 지원 프로파일과 다음 후보는 [017.next_profile_candidates.md](/home/u24/projects/code2me/dev_docs/01.requirement_analysis/017.next_profile_candidates.md:1)에서 본다.
+- adapter 개발/확장 기준은 아래 `Profiles And Adapters`, [Legacy Java EE 완료 기준](/home/u24/projects/code2me/dev_docs/04.testing/004.legacy_java_ee_done_criteria.md:1), [action-family 완료 기준](/home/u24/projects/code2me/dev_docs/04.testing/009.action_family_legacy_web_done_criteria.md:1)을 기준으로 삼는다.
+
 ## Profiles And Adapters
 
 이 도구는 `adapter-first`가 아니라 `profile-first` 구조다.
@@ -105,7 +126,7 @@ CLI JSON 출력에는 선택된 `profileId` 외에도 `profileDetection.score`, 
 
 쉽게 말하면, 사용자가 직접 고르는 것은 보통 `분석 전략(profile)`이고, adapter는 그 전략 안에서 자동으로 실행되는 `세부 분석기`다.
 
-예를 들어 사용자가 `--profile legacy-java-ee`를 선택하면, 내부에서는 “이 프로젝트를 Legacy Java EE 방식으로 읽겠다”는 뜻이 된다. 그러면 도구가 알아서 `web.xml`, Spring XML, Java 소스, JSP, iBATIS/MyBatis mapper, SiteMesh 설정, `build.xml`을 읽는 adapter들을 묶어서 실행한다. 사용자가 `web-xml`, `jsp-view`, `mybatis-mapper`를 하나씩 외울 필요는 없다.
+예를 들어 사용자가 `--profile legacy-java-ee`를 선택하면, 내부에서는 “이 프로젝트를 Legacy Java EE 방식으로 읽겠다”는 뜻이 된다. 그러면 도구가 알아서 `web.xml`, Spring XML, Java 소스, JSP, iBATIS/MyBatis mapper, SiteMesh 설정, `build.xml`을 읽는 adapter들을 묶어서 실행한다. `--profile action-family-legacy-web`를 선택하면 `web.xml` filter, `struts.xml`, ActionBean/Action 클래스, JSP를 중심으로 action-family 흐름을 복원한다. 사용자가 `web-xml`, `jsp-view`, `mybatis-mapper`를 하나씩 외울 필요는 없다.
 
 즉 구조는 아래처럼 이해하면 된다.
 
@@ -114,12 +135,13 @@ CLI JSON 출력에는 선택된 `profileId` 외에도 `profileDetection.score`, 
 3. 각 adapter가 자기 담당 파일을 읽고 부분 결과를 만든다.
 4. 분석 코어가 그 결과를 병합해서 최종 그래프와 리포트를 만든다.
 
-현재 구현에서는 `Legacy Java EE` 프로파일이 `ant-build-xml`, `web-xml`, `spring-xml`, `java-source-basic`, `ibatis-sql-map`, `mybatis-mapper`, `jsp-view`, `sitemesh-config`를 한 세트로 실행한다.
+현재 구현에서는 `Legacy Java EE` 프로파일이 `ant-build-xml`, `web-xml`, `spring-xml`, `java-source-basic`, `ibatis-sql-map`, `mybatis-mapper`, `jsp-view`, `sitemesh-config`를 한 세트로 실행하고, `action-family-legacy-web` 프로파일은 `ant-build-xml`, `web-xml`, `action-config`, `java-source-basic`, `ibatis-sql-map`, `mybatis-mapper`, `jsp-view`, `sitemesh-config`를 한 세트로 실행한다.
 
 그래서 기본 사용 흐름은 이렇다.
 
 - 초보자: `npm run analyze -- <project-root>`
 - 명시적 사용: `npm run analyze -- <project-root> --profile legacy-java-ee`
+- action-family 명시: `npm run analyze -- <project-root> --profile action-family-legacy-web`
 - 고급 사용: `npm run analyze -- <project-root> --profile legacy-java-ee --adapter web-xml,spring-xml,java-source-basic`
 
 `--adapter`는 기본 진입점이 아니라 디버깅, 실험, 부분 분석용 override 옵션이다. 자유 조합을 기본 UX로 두지 않는 이유는 adapter 간 입력 중복, 추출 충돌, merge 책임이 사용자의 부담으로 넘어가기 때문이다.
@@ -141,7 +163,7 @@ NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- --list-adapters
 새 adapter를 붙이는 기본 절차는 이렇다.
 
 1. `AnalyzerAdapter` 인터페이스를 구현한다.
-2. adapter가 추출한 결과가 기존 merge 규칙과 `dev_docs/04.testing/004.legacy_java_ee_done_criteria.md`의 완료 기준에 맞는지 확인한다.
+2. adapter가 추출한 결과가 기존 merge 규칙과 각 프로파일 완료 기준 문서에 맞는지 확인한다.
 3. 적절한 profile의 adapter 묶음에 등록한다.
 4. `dev_docs/04.testing/005.regression_matrix.md` 기준으로 해당 축의 샘플 fixture와 회귀 테스트를 추가한다.
 5. README와 개발 문서를 함께 갱신한다.
@@ -154,6 +176,7 @@ NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- --list-adapters
 - 빌드: `NPM_CONFIG_CACHE=/tmp/.npm npm run build`
 - 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-minimal`
 - 프로파일 명시: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-minimal --profile legacy-java-ee`
+- action-family 명시: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/action-family-legacy-web-struts-minimal --profile action-family-legacy-web`
 - adapter override: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-minimal --profile legacy-java-ee --adapter web-xml,spring-xml,java-source-basic`
 - 프로파일 목록: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- --list-profiles`
 - 어댑터 목록: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- --list-adapters`
@@ -165,6 +188,8 @@ NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- --list-adapters
 - Mixed screen/api mapping 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-mixed-web-api`
 - View resolver variants 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-view-resolver-variants`
 - Env/locale branch 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-env-branch`
+- action-family Struts 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/action-family-legacy-web-struts-minimal`
+- action-family Stripes 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/action-family-legacy-web-stripes-minimal`
 - SiteMesh alias 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-sitemesh-alias`
 - SiteMesh direct 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-sitemesh-direct`
 - SiteMesh excludes/defaultdir 샘플 분석: `NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- samples/legacy-java-ee-sitemesh-excludes`
@@ -187,22 +212,32 @@ NPM_CONFIG_CACHE=/tmp/.npm npm run analyze -- --list-adapters
 
 `report.html`은 초보자가 먼저 `앱이 어떻게 요청을 받는가`를 이해하고, 그다음 `특정 화면/논스크린 요청이 어떤 코드 경로를 타는가`를 따라가도록 재구성된 요약 전용 페이지다.
 
-- `Start Here`: 보고서 읽는 순서, 대표 `Framework Flow`, 대표 `Screen Flow`, 대표 `Non-screen Flow` 요약
-- `Framework Flow`: `web.xml -> DispatcherServlet -> dispatcher-servlet.xml -> applicationContext*.xml -> request mapping` 부트스트랩 흐름 보기
-- `Screen Flows`: `요청 URL -> Controller/Action -> Service -> DAO -> Mapper/SQL -> View -> Layout` 중심의 화면 요청 흐름 보기
-- `Non-screen Flows`: `요청 URL -> Controller/Action -> Service -> DAO -> Mapper/SQL -> Response` 중심의 논스크린 요청 흐름 보기
+- `Start Here`: 보고서 읽는 순서, 대표 `Entry Flows`, 대표 요청 흐름, 핵심 요약
+- `Entry Flows`: 이 앱이 어떤 진입 패턴과 프론트 컨트롤러로 요청을 받는지 보기
+- `Request Flows`: 화면 요청과 논화면 요청을 나눠서 구체 흐름 보기
 - `Flow Details`: 선택된 흐름의 현재 컨텍스트, 진입 경로, 비즈니스 단계, 데이터 접근, 출력, UI action을 단계별로 추적
-- `Architecture Context`: 현재 흐름 뒤의 `Module Profiles`, `Inferred Data Paths`, 공통 모듈 허브, 런타임 구조 요약 보기
+- `Context`: 현재 흐름 뒤의 `Module Profiles`, `Inferred Data Paths`, 공통 모듈 허브, 런타임 구조 요약 보기
 - `Explore`: 메인 리포트에서는 분리 페이지 `explore.html`로 이동
 - `Evidence`: 메인 리포트에서는 분리 페이지 `evidence.html`로 이동
 - `Raw / JSON`: 메인 리포트에서는 `raw.html`과 `snapshot.json` 링크로 이동
 
-`type` 필터는 현재 탭 안에서 항목 종류를 좁히는 용도다. `가로형/카드형` 토글은 `Framework Flow`, `Screen Flows`, `Non-screen Flows`, `Architecture Context` 카드 레이아웃을 바꾸는 용도다. 각 결과 목록 섹션 제목에는 현재 필터 기준 `조회 건수`가 함께 표시된다.
+`type` 필터는 현재 탭 안에서 항목 종류를 좁히는 용도다. `가로형/카드형` 토글은 `Entry Flows`, `Request Flows`, `Context` 카드 레이아웃을 바꾸는 용도다. 각 결과 목록 섹션 제목에는 현재 필터 기준 `조회 건수`가 함께 표시된다.
 
-`Framework Flow`는 `web.xml`의 `url-pattern`, `DispatcherServlet`, `contextConfigLocation`, 선언된 Spring 설정 파일을 기준으로 “이 앱이 왜 이 URL을 받을 수 있는가”를 설명한다. `Screen Flows`와 `Non-screen Flows`는 가능하면 controller class가 아니라 `handler method + 단일 URL` 기준의 concrete flow로 분리되어 `URL -> action method -> service/dao -> view/response`를 보여준다. 여기에는 Spring annotation 기반 매핑뿐 아니라 `SimpleUrlHandlerMapping + PropertiesMethodNameResolver`로 정의된 `*.as` URL도 포함된다.
+`Entry Flows`는 현재 프로파일 기준의 진입 패턴과 프론트 컨트롤러 설정을 설명한다. `Legacy Java EE`에서는 `web.xml`의 `url-pattern`, `DispatcherServlet`, `contextConfigLocation`, 선언된 Spring 설정 파일을 기준으로 “이 앱이 왜 이 URL을 받을 수 있는가”를 보여준다. `Request Flows`는 가능하면 controller class가 아니라 `handler method + 단일 URL` 기준의 concrete flow로 분리되어 `URL -> handler -> service/dao -> view/response`를 보여준다. 여기에는 Spring annotation 기반 매핑뿐 아니라 `SimpleUrlHandlerMapping + PropertiesMethodNameResolver`로 정의된 `*.as` URL도 포함된다.
 
-`Non-screen Flows`는 현재 `responseKind`를 함께 보여준다. 기본 종류는 `json`, `file`, `redirect`, `action`, `unknown`이다. 이 값은 `@ResponseBody`, `produces`, response content-type, redirect view name, 다운로드/attachment 흔적을 우선 보고, 부족한 경우 URL/메서드명 휴리스틱으로 보완한다. `external-facing candidate`, `ajax`, `download`는 아직 확정 타입이 아니라 보조 태그다.
+`Request Flows` 안의 non-UI 흐름은 현재 `responseKind`를 함께 보여준다. 기본 종류는 `json`, `file`, `redirect`, `action`, `unknown`이다. 이 값은 `@ResponseBody`, `produces`, response content-type, redirect view name, 다운로드/attachment 흔적을 우선 보고, 부족한 경우 URL/메서드명 휴리스틱으로 보완한다. `external-facing candidate`, `ajax`, `download`는 아직 확정 타입이 아니라 보조 태그다.
 
 `Flow Details`는 상단에 현재 선택된 흐름 컨텍스트를 먼저 보여주고, 그 아래에서 `Entry Setup -> Request Path -> Business Steps -> Data Access -> View/Response -> UI Actions -> Related Configs`를 따라가게 한다. 논스크린 흐름 상세에는 `response kind`, `content types`, `redirect target`, `file response hints`도 함께 노출한다. JSP 안의 `a href`, `form action`, `onclick`, `fetch`, `ajax`, `location.href`, `window.open` 신호를 추출해 “이 버튼/링크를 누르면 다음에 어떤 URL/논스크린 흐름으로 가는가”를 연결한다. 관련 데이터가 있을 때만 `Open Data Flow` 액션이 노출된다.
 
-`Architecture Context`는 확정 실행 경로가 아니라, 현재 흐름 뒤에서 공통으로 보이는 추정 데이터 경로와 공유 모듈을 요약한다. `Module Profiles`는 모듈별 `API/Web/Internal action` 점수와 `responseKind` 분포를 바탕으로 `MVC-heavy web app`, `API-centric mixed app` 같은 성격 라벨을 보여준다. `Controller -> Service -> DAO` 체인을 우선 만들고, DAO 이름과 mapper namespace suffix가 맞으면 `Mapper/SQL`도 fallback으로 채운다. 추정 데이터 경로 카드는 `근거 강함(confirmed)`, `추정(inferred)`, `휴리스틱(heuristic)`으로 나뉘고, 약한 근거나 이름 기반 fallback만 있는 카드는 기본적으로 숨겨진다. 데이터 카드에는 전체 요청 URL 목록, 판단 근거, 근거 종류가 함께 표시된다. 대형 스냅샷에서는 메인 `report.html`이 흐름 요약 중심으로 유지되고, 무거운 `Explore`, `Evidence`, `Raw`는 각각 `explore.html`, `evidence.html`, `raw.html`로 분리된다.
+`Context`는 확정 실행 경로가 아니라, 현재 흐름 뒤에서 공통으로 보이는 추정 데이터 경로와 공유 모듈을 요약한다. `Module Profiles`는 모듈별 `API/Web/Internal action` 점수와 `responseKind` 분포를 바탕으로 `MVC-heavy web app`, `API-centric mixed app` 같은 성격 라벨을 보여준다. `Controller -> Service -> DAO` 체인을 우선 만들고, DAO 이름과 mapper namespace suffix가 맞으면 `Mapper/SQL`도 fallback으로 채운다. 추정 데이터 경로 카드는 `근거 강함(confirmed)`, `추정(inferred)`, `휴리스틱(heuristic)`으로 나뉘고, 약한 근거나 이름 기반 fallback만 있는 카드는 기본적으로 숨겨진다. 데이터 카드에는 전체 요청 URL 목록, 판단 근거, 근거 종류가 함께 표시된다. 대형 스냅샷에서는 메인 `report.html`이 흐름 요약 중심으로 유지되고, 무거운 `Explore`, `Evidence`, `Raw`는 각각 `explore.html`, `evidence.html`, `raw.html`로 분리된다.
+
+## Docs Index
+
+- 실행 상태와 우선순위: [EXECUTION_TRACKER.md](/home/u24/projects/code2me/EXECUTION_TRACKER.md:1)
+- Legacy Java EE 완료 기준: [dev_docs/04.testing/004.legacy_java_ee_done_criteria.md](/home/u24/projects/code2me/dev_docs/04.testing/004.legacy_java_ee_done_criteria.md:1)
+- action-family 완료 기준: [dev_docs/04.testing/009.action_family_legacy_web_done_criteria.md](/home/u24/projects/code2me/dev_docs/04.testing/009.action_family_legacy_web_done_criteria.md:1)
+- 회귀 매트릭스: [dev_docs/04.testing/005.regression_matrix.md](/home/u24/projects/code2me/dev_docs/04.testing/005.regression_matrix.md:1)
+- 실제 프로젝트 / 공개 샘플 게이트: [dev_docs/04.testing/006.real_project_validation_gate.md](/home/u24/projects/code2me/dev_docs/04.testing/006.real_project_validation_gate.md:1)
+- 공개 샘플 후보: [dev_docs/04.testing/007.public_sample_candidates.md](/home/u24/projects/code2me/dev_docs/04.testing/007.public_sample_candidates.md:1)
+- 다음 프로파일 우선순위: [dev_docs/01.requirement_analysis/017.next_profile_candidates.md](/home/u24/projects/code2me/dev_docs/01.requirement_analysis/017.next_profile_candidates.md:1)
+- 메뉴/내비게이션 원칙: [dev_docs/03.development/005.menu_navigation_principles.md](/home/u24/projects/code2me/dev_docs/03.development/005.menu_navigation_principles.md:1)

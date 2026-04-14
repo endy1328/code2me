@@ -34,10 +34,13 @@ describe("CLI analyze options", () => {
 });
 
 describe("built-in profile catalog", () => {
-  it("exposes the legacy java ee profile and its adapters", () => {
+  it("exposes the legacy and action-family profiles with their adapters", () => {
     const profiles = createBuiltInProfiles();
+    const actionProfile = findProfileById(profiles, "action-family-legacy-web");
     const legacyProfile = findProfileById(profiles, "legacy-java-ee");
 
+    expect(actionProfile?.name).toBe("Action-family Legacy Web");
+    expect(actionProfile?.getRequiredAdapters().map((adapter) => adapter.id)).toContain("action-config");
     expect(legacyProfile?.name).toBe("Legacy Java EE");
     expect(legacyProfile?.getRequiredAdapters().map((adapter) => adapter.id)).toContain("web-xml");
     expect(legacyProfile?.getRequiredAdapters().map((adapter) => adapter.id)).toContain("java-source-basic");
@@ -50,6 +53,7 @@ describe("built-in profile catalog", () => {
     expect(adapterIds).toContain("web-xml");
     expect(adapterIds).toContain("spring-xml");
     expect(adapterIds).toContain("jsp-view");
+    expect(adapterIds).toContain("action-config");
     expect(new Set(adapterIds).size).toBe(adapterIds.length);
   });
 });

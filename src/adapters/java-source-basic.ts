@@ -4,9 +4,17 @@ import { parse } from "java-parser";
 import type { AdapterContext, AdapterInputSet, AdapterResult, AnalyzerAdapter } from "../core/adapter.js";
 import type { AdapterWarning, ArtifactRecord, GraphEdge, GraphNode } from "../core/model.js";
 import { edgeId, nodeId } from "../utils/id.js";
+import { appendActionEvent, inferActionClassBaseName, inferActionRouteFromClassName } from "../utils/action-family.js";
 
 function inferJavaRole(content: string, className: string): string {
-  if (/@Controller\b/.test(content) || className.endsWith("Controller") || className.endsWith("Action")) {
+  if (
+    /@Controller\b/.test(content) ||
+    /@UrlBinding\b/.test(content) ||
+    /\bimplements\s+ActionBean\b/.test(content) ||
+    className.endsWith("Controller") ||
+    className.endsWith("Action") ||
+    className.endsWith("ActionBean")
+  ) {
     return "controller";
   }
   if (/@Service\b/.test(content) || className.endsWith("Service") || className.endsWith("ServiceImpl")) {
@@ -37,7 +45,9 @@ function extractImports(content: string): string[] {
 }
 
 function extractClassName(content: string): string | undefined {
-  return /\b(class|interface)\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(content)?.[2];
+  const cleanContent = stripComments(content);
+  return /(?:^|\n)\s*(?:public|protected|private)?\s*(?:abstract|final)?\s*(?:class|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b/m
+    .exec(cleanContent)?.[1];
 }
 
 function inferDependencyType(typeName: string): string {
@@ -245,13 +255,23 @@ function extractMappingValues(annotationText: string): string[] {
   return Array.from(values);
 }
 
+function extractStringConstants(content: string): Record<string, string> {
+  return Object.fromEntries(
+    Array.from(content.matchAll(/(?:private|protected|public)\s+static\s+final\s+String\s+([A-Z0-9_]+)\s*=\s*"([^"]+)"/g))
+      .map((match) => [match[1] ?? "", match[2] ?? ""])
+      .filter((entry): entry is [string, string] => Boolean(entry[0]) && Boolean(entry[1])),
+  );
+}
+
 function normalizeViewName(raw: string): string {
   return raw
     .trim()
     .replace(/^redirect:/, "")
     .replace(/^forward:/, "")
     .replace(/^\/+/, "")
-    .replace(/\.jsp$/, "");
+    .replace(/\.jsp$/, "")
+    .replace(/^WEB-INF\/views\//, "")
+    .replace(/^WEB-INF\/jsp\//, "");
 }
 
 function normalizeMappingPath(path: string): string {
@@ -279,6 +299,8 @@ function extractRequestMappings(content: string): string[] {
   const classAnnotationBlock = classMatch?.[1] ?? "";
   const classMappings = Array.from(classAnnotationBlock.matchAll(/@(?:RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*\(([^)]*)\)/g))
     .flatMap((match) => extractMappingValues(match[1] ?? ""));
+  const urlBindings = Array.from(classAnnotationBlock.matchAll(/@UrlBinding\s*\(([^)]*)\)/g))
+    .flatMap((match) => extractMappingValues(match[1] ?? ""));
 
   const methodMappings = Array.from(
     content.matchAll(/@(?:RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*\(([^)]*)\)\s*(?:@[^\n]+\s*)*(?:public|protected|private)\s+(?!class\b)/g),
@@ -298,7 +320,7 @@ function extractRequestMappings(content: string): string[] {
   }
 
   if (mappings.size === 0) {
-    for (const classMapping of classMappings) {
+    for (const classMapping of [...classMappings, ...urlBindings]) {
       mappings.add(normalizeMappingPath(classMapping));
     }
   }
@@ -306,12 +328,14 @@ function extractRequestMappings(content: string): string[] {
   return Array.from(mappings);
 }
 
-function collectViewNamesFromMethodBody(content: string): string[] {
+function collectViewNamesFromMethodBody(content: string, stringConstants: Record<string, string> = {}): string[] {
   const viewNames = new Set<string>();
+  const localStringValues = new Map<string, string>();
   const patterns = [
     /return\s+"([^"]+)"/g,
     /new\s+ModelAndView\s*\(\s*"([^"]+)"/g,
     /\.setViewName\s*\(\s*"([^"]+)"/g,
+    /new\s+ForwardResolution\s*\(\s*"([^"]+)"/g,
   ];
 
   for (const pattern of patterns) {
@@ -324,6 +348,49 @@ function collectViewNamesFromMethodBody(content: string): string[] {
     }
   }
 
+  for (const match of content.matchAll(/new\s+ForwardResolution\s*\(\s*([A-Z0-9_]+)\s*\)/g)) {
+    const value = normalizeViewName(stringConstants[match[1] ?? ""] ?? "");
+    if (value && value !== "ERROR" && value !== "OK" && !/^[0-9]+$/.test(value)) {
+      viewNames.add(value);
+    }
+  }
+
+  for (const match of content.matchAll(/\bString\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]+)"/g)) {
+    const variableName = match[1] ?? "";
+    const variableValue = normalizeViewName(match[2] ?? "");
+    if (!variableName || !variableValue || variableValue === "ERROR" || variableValue === "OK" || /^[0-9]+$/.test(variableValue)) {
+      continue;
+    }
+    localStringValues.set(variableName, variableValue);
+  }
+
+  for (const match of content.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]+)"/g)) {
+    const variableName = match[1] ?? "";
+    const variableValue = normalizeViewName(match[2] ?? "");
+    if (!variableName || !variableValue || variableValue === "ERROR" || variableValue === "OK" || /^[0-9]+$/.test(variableValue)) {
+      continue;
+    }
+    localStringValues.set(variableName, variableValue);
+  }
+
+  const variablePatterns = [
+    /return\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g,
+    /new\s+ModelAndView\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*[\),]/g,
+    /\.setViewName\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/g,
+    /new\s+ForwardResolution\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*[\),]/g,
+  ];
+
+  for (const pattern of variablePatterns) {
+    for (const match of content.matchAll(pattern)) {
+      const variableName = match[1] ?? "";
+      const variableValue = localStringValues.get(variableName) ?? normalizeViewName(stringConstants[variableName] ?? "");
+      if (!variableValue || variableValue === "ERROR" || variableValue === "OK" || /^[0-9]+$/.test(variableValue)) {
+        continue;
+      }
+      viewNames.add(variableValue);
+    }
+  }
+
   return Array.from(viewNames);
 }
 
@@ -333,6 +400,7 @@ function collectRedirectTargetsFromMethodBody(content: string): string[] {
     /return\s+"redirect:([^"]+)"/g,
     /new\s+ModelAndView\s*\(\s*"redirect:([^"]+)"/g,
     /\.setViewName\s*\(\s*"redirect:([^"]+)"/g,
+    /new\s+RedirectResolution\s*\(\s*"([^"]+)"/g,
   ];
 
   for (const pattern of patterns) {
@@ -345,6 +413,86 @@ function collectRedirectTargetsFromMethodBody(content: string): string[] {
   }
 
   return Array.from(targets);
+}
+
+function collectRedirectActionClassesFromMethodBody(
+  content: string,
+  packageName: string | undefined,
+  imports: string[],
+  classFqn: string,
+): string[] {
+  const targets = new Set<string>();
+
+  for (const match of content.matchAll(/new\s+(?:RedirectResolution|ForwardResolution)\s*\(\s*([A-Z][A-Za-z0-9_]*)\.class/g)) {
+    const simpleTypeName = match[1] ?? "";
+    if (!simpleTypeName) {
+      continue;
+    }
+    targets.add(resolveTypeName(simpleTypeName, imports, packageName));
+  }
+
+  if (/new\s+(?:RedirectResolution|ForwardResolution)\s*\(\s*getClass\s*\(\s*\)\s*\)/.test(content)) {
+    targets.add(classFqn);
+  }
+
+  return Array.from(targets);
+}
+
+function collectSessionRouteHintsFromMethodBody(
+  content: string,
+  packageName: string | undefined,
+  imports: string[],
+): string[] {
+  const hints = new Set<string>();
+
+  for (const match of content.matchAll(/(?:([A-Z][A-Za-z0-9_<>.]*)\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*)?(?:\([^)]+\)\s*)?[^;\n]*?getAttribute\s*\(\s*"([^"]+)"\s*\)/g)) {
+    const rawTypeName = (match[1] ?? "").replace(/<.*$/, "").trim();
+    const alias = (match[2] ?? "").trim();
+    if (!alias) {
+      continue;
+    }
+    if (alias.startsWith("/actions/") && /\.action$/i.test(alias)) {
+      hints.add(alias.replace(/^\/actions/, ""));
+      continue;
+    }
+    if (/^[a-zA-Z][A-Za-z0-9_]*Bean$/.test(alias) && rawTypeName) {
+      const resolvedType = resolveTypeName(rawTypeName, imports, packageName);
+      const inferredRoute = inferActionRouteFromClassName(resolvedType, [], "*.action");
+      if (inferredRoute) {
+        hints.add(inferredRoute);
+      }
+    }
+  }
+
+  return Array.from(hints);
+}
+
+function inferRedirectRoutesFromActionClasses(
+  targetClasses: string[],
+  classRequestMappings: string[],
+  packageName: string | undefined,
+  classFqn: string,
+): string[] {
+  const baseRoute = classRequestMappings[0]?.split("?")[0];
+  if (!baseRoute) {
+    return [];
+  }
+  const routePrefix = baseRoute.replace(/\/[^/]+$/, "");
+  const extensionMatch = baseRoute.match(/(\.[^./?#]+)$/);
+  const extension = extensionMatch?.[1] ?? ".action";
+
+  return Array.from(new Set(targetClasses
+    .filter((targetClass) =>
+      targetClass === classFqn ||
+      !targetClass.includes(".") ||
+      (packageName ? targetClass.startsWith(`${packageName}.`) : false),
+    )
+    .map((targetClass) => {
+      const simpleName = targetClass.split(".").pop() ?? targetClass;
+      const baseName = inferActionClassBaseName(simpleName);
+      return baseName ? `${routePrefix}/${baseName}${extension}`.replace(/\/{2,}/g, "/") : undefined;
+    })
+    .filter((value): value is string => Boolean(value))));
 }
 
 function collectProducesFromAnnotation(annotationText: string): string[] {
@@ -413,6 +561,9 @@ function inferFileResponseHints(methodBody: string, contentTypes: string[]): str
   }
   if (/\b(download|export|excel|attachment)\b/i.test(methodBody)) {
     hints.add("download-keyword");
+  }
+  if (/new\s+StreamingResolution\s*\(/.test(methodBody)) {
+    hints.add("streaming-resolution");
   }
   return Array.from(hints);
 }
@@ -552,8 +703,12 @@ function extractRequestHandlers(content: string): Array<{
   produces: string[];
   contentTypes: string[];
   redirectTargets: string[];
+  redirectActionClasses?: string[];
+  sessionRouteHints?: string[];
   fileResponseHints: string[];
   serviceCalls: Array<{ targetType: string; targetName: string; methodName: string }>;
+  eventName?: string;
+  isDefaultHandler?: boolean;
 }> {
   const classMatch = content.match(/((?:@\w+(?:\([^)]*\))?\s*)*)\bpublic\s+class\b/);
   const classAnnotationBlock = classMatch?.[1] ?? "";
@@ -567,9 +722,14 @@ function extractRequestHandlers(content: string): Array<{
     produces: string[];
     contentTypes: string[];
     redirectTargets: string[];
+    redirectActionClasses?: string[];
+    sessionRouteHints?: string[];
     fileResponseHints: string[];
     serviceCalls: Array<{ targetType: string; targetName: string; methodName: string }>;
+    eventName?: string;
+    isDefaultHandler?: boolean;
   }> = [];
+  const stringConstants = extractStringConstants(content);
   const typedMembers = extractTypedMembers(content, extractPackageName(content), extractImports(content));
   const memberIndex = new Map(typedMembers.map((member) => [member.memberName, member]));
   const signaturePattern = /((?:@\w+(?:\([^)]*\))?\s*)*)(?:public|protected|private)?\s*[\w<>\[\], ?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:throws\s+[^{]+)?\{/g;
@@ -581,7 +741,7 @@ function extractRequestHandlers(content: string): Array<{
     const openBraceIndex = content.indexOf("{", match.index + match[0].length - 1);
     const closeBraceIndex = findMatchingBrace(content, openBraceIndex);
     const methodBody = content.slice(openBraceIndex + 1, closeBraceIndex);
-    const viewNames = collectViewNamesFromMethodBody(methodBody);
+    const viewNames = collectViewNamesFromMethodBody(methodBody, stringConstants);
     const responseBody = /@ResponseBody\b/.test(annotationBlock);
     const produces = collectProducesFromAnnotation(annotationBlock);
     const contentTypes = collectResponseContentTypes(methodBody, annotationBlock);
@@ -637,6 +797,8 @@ function extractRequestHandlers(content: string): Array<{
           candidate.methodName === call.methodName,
         ) === index,
       ),
+      eventName: methodName,
+      isDefaultHandler: /@DefaultHandler\b/.test(annotationBlock),
     });
     signaturePattern.lastIndex = closeBraceIndex + 1;
   }
@@ -648,6 +810,7 @@ function extractActionMethodHandlers(
   packageName: string | undefined,
   imports: string[],
   classRequestMappings: string[],
+  classFqn: string,
 ): Array<{
   methodName: string;
   requestMappings: string[];
@@ -656,10 +819,15 @@ function extractActionMethodHandlers(
   produces: string[];
   contentTypes: string[];
   redirectTargets: string[];
+  redirectActionClasses?: string[];
+  sessionRouteHints?: string[];
   fileResponseHints: string[];
   serviceCalls: Array<{ targetType: string; targetName: string; methodName: string }>;
+  eventName?: string;
+  isDefaultHandler?: boolean;
 }> {
   const cleanContent = stripComments(content);
+  const stringConstants = extractStringConstants(cleanContent);
   const summaries = extractMethodSummaries(cleanContent, packageName, imports);
   const summaryByMethod = new Map(summaries.map((summary) => [summary.methodName, summary]));
   const handlers: Array<{
@@ -670,30 +838,58 @@ function extractActionMethodHandlers(
     produces: string[];
     contentTypes: string[];
     redirectTargets: string[];
+    redirectActionClasses?: string[];
+    sessionRouteHints?: string[];
     fileResponseHints: string[];
     serviceCalls: Array<{ targetType: string; targetName: string; methodName: string }>;
+    eventName?: string;
+    isDefaultHandler?: boolean;
   }> = [];
-  const signaturePattern = /(?:public|protected|private)?\s*[\w<>\[\], ?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*(?:throws\s+[^{]+)?\{/g;
+  const signaturePattern = /((?:@\w+(?:\([^)]*\))?\s*)*)(?:public|protected|private)?\s*([\w<>\[\], ?.]+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*(?:throws\s+[^{]+)?\{/g;
   let match: RegExpExecArray | null;
   while ((match = signaturePattern.exec(cleanContent)) !== null) {
-    const methodName = match[1] ?? "";
-    const parameters = match[2] ?? "";
-    if (!/(HttpServletRequest|HttpServletResponse|ModelMap|Model\b|Map\b)/.test(parameters)) {
-      continue;
-    }
+    const annotationBlock = match[1] ?? "";
+    const returnType = match[2] ?? "";
+    const methodName = match[3] ?? "";
+    const parameters = match[4] ?? "";
     const openBraceIndex = cleanContent.indexOf("{", match.index + match[0].length - 1);
     const closeBraceIndex = findMatchingBrace(cleanContent, openBraceIndex);
     const methodBody = cleanContent.slice(openBraceIndex + 1, closeBraceIndex);
-    const viewNames = collectViewNamesFromMethodBody(methodBody);
-    const redirectTargets = collectRedirectTargetsFromMethodBody(methodBody);
+    const viewNames = collectViewNamesFromMethodBody(methodBody, stringConstants);
+    const redirectActionClasses = collectRedirectActionClassesFromMethodBody(methodBody, packageName, imports, classFqn);
+    const sessionRouteHints = collectSessionRouteHintsFromMethodBody(methodBody, packageName, imports);
+    const redirectTargets = Array.from(new Set([
+      ...collectRedirectTargetsFromMethodBody(methodBody),
+      ...(/new\s+RedirectResolution\s*\(\s*getClass\s*\(\s*\)\s*\)/.test(methodBody) && classRequestMappings.length > 0
+        ? [classRequestMappings[0] ?? ""]
+        : []),
+      ...inferRedirectRoutesFromActionClasses(redirectActionClasses, classRequestMappings, packageName, classFqn),
+    ].filter(Boolean)));
     const contentTypes = collectResponseContentTypes(methodBody, "");
     const fileResponseHints = inferFileResponseHints(methodBody, contentTypes);
     const summary = summaryByMethod.get(methodName);
     const serviceCalls = (summary?.dependencyCalls ?? [])
       .filter((call) => call.targetType === "service" || call.targetType === "biz" || call.targetType === "dao");
+    const usesActionStyleSignature =
+      /(HttpServletRequest|HttpServletResponse|ModelMap|Model\b|Map\b)/.test(parameters) ||
+      /@DefaultHandler\b/.test(annotationBlock) ||
+      /@HandlesEvent\b/.test(annotationBlock) ||
+      /\bResolution\b/.test(returnType);
+    if (!usesActionStyleSignature) {
+      signaturePattern.lastIndex = closeBraceIndex + 1;
+      continue;
+    }
+    const handlesEvent = /@HandlesEvent\s*\(\s*"([^"]+)"\s*\)/.exec(annotationBlock)?.[1];
+    const requestMappings = handlesEvent
+      ? classRequestMappings.map((route) => appendActionEvent(route, handlesEvent))
+      : /@DefaultHandler\b/.test(annotationBlock)
+        ? classRequestMappings
+        : classRequestMappings.map((route) => appendActionEvent(route, methodName));
     if (
       viewNames.length === 0 &&
       redirectTargets.length === 0 &&
+      redirectActionClasses.length === 0 &&
+      sessionRouteHints.length === 0 &&
       fileResponseHints.length === 0 &&
       contentTypes.length === 0 &&
       serviceCalls.length === 0
@@ -703,18 +899,22 @@ function extractActionMethodHandlers(
     }
     handlers.push({
       methodName,
-      requestMappings: classRequestMappings,
+      requestMappings,
       viewNames,
       responseBody: false,
       produces: [],
       contentTypes,
       redirectTargets,
+      redirectActionClasses,
+      sessionRouteHints,
       fileResponseHints,
       serviceCalls: serviceCalls.map((call) => ({
         targetType: call.targetType,
         targetName: call.targetName,
         methodName: call.methodName,
       })),
+      eventName: handlesEvent ?? methodName,
+      isDefaultHandler: /@DefaultHandler\b/.test(annotationBlock),
     });
     signaturePattern.lastIndex = closeBraceIndex + 1;
   }
@@ -770,14 +970,47 @@ export class JavaSourceBasicAdapter implements AnalyzerAdapter {
       const role = inferJavaRole(content, className);
       const fqn = packageName ? `${packageName}.${className}` : className;
       const imports = extractImports(content);
-      const requestMappings = role === "controller" ? extractRequestMappings(content) : [];
+      const actionFramework = /@UrlBinding\b/.test(content) || /\bimplements\s+ActionBean\b/.test(content)
+        ? "stripes"
+        : undefined;
+      const requestMappings = role === "controller"
+        ? (() => {
+            const directMappings = extractRequestMappings(content);
+            if (directMappings.length > 0) {
+              return directMappings;
+            }
+            if (actionFramework === "stripes") {
+              const inferredRoute = inferActionRouteFromClassName(fqn, [], "*.action");
+              return inferredRoute ? [inferredRoute] : [];
+            }
+            return [];
+          })()
+        : [];
       const requestHandlers = role === "controller"
         ? (() => {
             const annotatedHandlers = extractRequestHandlers(content);
+            const actionHandlers = extractActionMethodHandlers(content, packageName, imports, requestMappings, fqn);
+            if (actionFramework === "stripes" && annotatedHandlers.length > 0 && actionHandlers.length > 0) {
+              return annotatedHandlers.map((handler) => {
+                const actionHandler = actionHandlers.find((candidate) => candidate.methodName === handler.methodName);
+                if (!actionHandler) {
+                  return handler;
+                }
+                return {
+                  ...handler,
+                  requestMappings: actionHandler.requestMappings.length > 0 ? actionHandler.requestMappings : handler.requestMappings,
+                  viewNames: actionHandler.viewNames.length > 0 ? Array.from(new Set([...handler.viewNames, ...actionHandler.viewNames])) : handler.viewNames,
+                  redirectTargets: actionHandler.redirectTargets.length > 0 ? Array.from(new Set([...handler.redirectTargets, ...actionHandler.redirectTargets])) : handler.redirectTargets,
+                  redirectActionClasses: actionHandler.redirectActionClasses,
+                  sessionRouteHints: actionHandler.sessionRouteHints,
+                  fileResponseHints: actionHandler.fileResponseHints.length > 0 ? Array.from(new Set([...handler.fileResponseHints, ...actionHandler.fileResponseHints])) : handler.fileResponseHints,
+                };
+              });
+            }
             if (annotatedHandlers.length > 0) {
               return annotatedHandlers;
             }
-            return extractActionMethodHandlers(content, packageName, imports, requestMappings);
+            return actionHandlers;
           })()
         : [];
       const methodSummaries = role === "service" || role === "biz" || role === "dao"
@@ -795,7 +1028,7 @@ export class JavaSourceBasicAdapter implements AnalyzerAdapter {
         sourceAdapterIds: [this.id],
         confidence: "medium" as const,
         evidence: [{ kind: "java-class", value: fqn }],
-        metadata: { packageName, requestMappings, requestHandlers, methodSummaries },
+        metadata: { packageName, className: fqn, requestMappings, requestHandlers, methodSummaries, actionFramework },
       };
       nodes.push(classNode);
 

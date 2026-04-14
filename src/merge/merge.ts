@@ -9,6 +9,37 @@ function mergeStringArrays(left: unknown, right: unknown): string[] | undefined 
   return values.length > 0 ? Array.from(new Set(values)) : undefined;
 }
 
+function inferMappingsFromWildcardPatterns(methodName: string, patterns: string[]): string[] {
+  if (!methodName || methodName === "handler") {
+    return [];
+  }
+  return Array.from(new Set(patterns
+    .filter((pattern) => typeof pattern === "string" && pattern.includes("*"))
+    .map((pattern) => pattern.replace("*", methodName))
+    .filter((pattern) => pattern.length > 0)));
+}
+
+function enrichRequestHandlersWithWildcardMappings(
+  handlers: Record<string, unknown>[],
+  handlerMappingPatterns: string[],
+): Record<string, unknown>[] {
+  return handlers.map((handler) => {
+    const methodName = typeof handler.methodName === "string" ? handler.methodName : "handler";
+    const requestMappings = mergeStringArrays(handler.requestMappings, []) ?? [];
+    if (requestMappings.length > 0) {
+      return handler;
+    }
+    const inferredMappings = inferMappingsFromWildcardPatterns(methodName, handlerMappingPatterns);
+    if (inferredMappings.length === 0) {
+      return handler;
+    }
+    return {
+      ...handler,
+      requestMappings: inferredMappings,
+    };
+  });
+}
+
 function mergeRequestHandlers(left: unknown, right: unknown): Record<string, unknown>[] | undefined {
   const handlers = [
     ...(Array.isArray(left) ? left : []),
@@ -64,9 +95,25 @@ function mergeMetadata(left: Record<string, unknown> | undefined, right: Record<
   if (requestMappings) {
     merged.requestMappings = requestMappings;
   }
+  const handlerMappingPatterns = mergeStringArrays(left?.handlerMappingPatterns, right?.handlerMappingPatterns);
+  if (handlerMappingPatterns) {
+    merged.handlerMappingPatterns = handlerMappingPatterns;
+  }
   const requestHandlers = mergeRequestHandlers(left?.requestHandlers, right?.requestHandlers);
   if (requestHandlers) {
-    merged.requestHandlers = requestHandlers;
+    const enrichedHandlers = handlerMappingPatterns
+      ? enrichRequestHandlersWithWildcardMappings(requestHandlers, handlerMappingPatterns)
+      : requestHandlers;
+    merged.requestHandlers = enrichedHandlers;
+    const inferredRequestMappings = mergeStringArrays(
+      requestMappings,
+      enrichedHandlers.flatMap((handler) => Array.isArray(handler.requestMappings)
+        ? handler.requestMappings.filter((value): value is string => typeof value === "string" && value.length > 0)
+        : []),
+    );
+    if (inferredRequestMappings) {
+      merged.requestMappings = inferredRequestMappings;
+    }
   }
   return Object.keys(merged).length > 0 ? merged : undefined;
 }

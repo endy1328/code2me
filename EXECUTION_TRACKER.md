@@ -62,7 +62,7 @@
 - [x] 다음 프로파일 후보 1~2개 선정
 - [x] 프로파일별 입력 신호 초안 작성
 - [x] 프로파일별 최소 메타모델 차이 메모 작성
-- [x] 구현은 시작하지 않고 스켈레톤 문서만 유지
+- [x] `action-family-legacy-web` 최소 골격 구현 시작
 
 ## Current Status
 
@@ -84,13 +84,17 @@
   - Start Here / Flow Details 우선 노출 기준 문서 추가
   - persona scenario regression 문서 추가
   - next profile candidate 문서 추가
+  - `action-family-legacy-web` profile / adapter 추가
+  - Struts `redirectAction` / Stripes self redirect 최소 해석 추가
+  - Struts / Stripes 최소 fixture 추가
   - README persona 반영
   - 관련 회귀 테스트 추가
-- 다음 우선순위
+- 현재 상태
+  - `action-family-legacy-web` 2차 범위는 일시 중지 (`paused`)
+- 재시작 시 다음 우선순위
+  - Stripes session alias route 정규화
   - representative real-project gate 반복 적용
-  - 공개 샘플 4차 검증
   - 실제 프로젝트 read-only gate 반복
-  - `action-family-legacy-web` 착수 여부 최종 결정
 
 ## Verification Baseline
 
@@ -104,9 +108,11 @@
   - `npm run analyze -- samples/legacy-java-ee-mixed-web-api`: 통과
   - `npm run analyze -- samples/legacy-java-ee-view-resolver-variants`: 통과
   - `npm run analyze -- samples/legacy-java-ee-env-branch`: 통과
+  - `npm run analyze -- samples/action-family-legacy-web-struts-minimal`: 통과
+  - `npm run analyze -- samples/action-family-legacy-web-stripes-minimal`: 통과
   - `npm run analyze -- /tmp/jpetstore-6-code2me`: 통과
   - `npm run analyze -- /tmp/spring-framework-petclinic-code2me`: no-match boundary 확인
-  - `npm run analyze -- /tmp/struts-examples-code2me/spring-struts`: hard fail 기록
-  - `npm run analyze -- /tmp/struts-examples-code2me/form-validation`: no-match boundary 확인
-  - `npm run analyze -- /tmp/stripes-code2me/examples`: no-match boundary 확인
+  - `npm run analyze -- /tmp/struts-examples-code2me/spring-struts`: `action-family-legacy-web`, soft fail 기록
+  - `npm run analyze -- /tmp/struts-examples-code2me/form-validation`: `action-family-legacy-web`, soft pass 기록
+  - `npm run analyze -- /tmp/stripes-code2me/examples`: `action-family-legacy-web`, soft fail 기록
   - `npm run analyze -- /tmp/legacy-java-ee-minimal-readonly`: read-only gate 통과

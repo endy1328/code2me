@@ -1,9 +1,10 @@
 import type { AnalyzerAdapter } from "./adapter.js";
 import type { AnalysisProfile } from "./profile.js";
+import { ActionFamilyLegacyWebProfile } from "../profiles/action-family-legacy-web.js";
 import { LegacyJavaEeProfile } from "../profiles/legacy-java-ee.js";
 
 export function createBuiltInProfiles(): AnalysisProfile[] {
-  return [new LegacyJavaEeProfile()];
+  return [new ActionFamilyLegacyWebProfile(), new LegacyJavaEeProfile()];
 }
 
 export function collectAvailableAdapters(profiles: AnalysisProfile[]): AnalyzerAdapter[] {

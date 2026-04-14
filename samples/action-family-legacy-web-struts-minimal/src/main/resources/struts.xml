@@ -1,0 +1,13 @@
+<struts>
+  <package name="default" namespace="/account" extends="struts-default">
+    <action name="list" class="com.example.action.AccountAction" method="list">
+      <result name="success">/WEB-INF/jsp/account/list.jsp</result>
+    </action>
+    <action name="download" class="com.example.action.AccountAction" method="download">
+      <result name="success" type="stream">accountCsv</result>
+    </action>
+    <action name="save" class="com.example.action.AccountAction" method="save">
+      <result name="success" type="redirectAction">list</result>
+    </action>
+  </package>
+</struts>
