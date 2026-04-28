@@ -91,6 +91,7 @@
   - Struts / Stripes 최소 fixture 추가
   - Stripes `session.getAttribute("/actions/*.action")` alias를 `Flow Details > Request Path` supporting evidence로 보존
   - Stripes typed session alias `session.getAttribute("accountBean")`를 ActionBean route hint로 보존
+  - Struts2 `redirectAction` / `chain` wildcard route hint 세분화
   - request handler 병합 시 `sessionRouteHints` / `redirectActionClasses` 메타데이터 보존
   - split report asset 구조에 맞춘 회귀 테스트 정리
   - mapper namespace suffix fallback과 screen flow variant grouping 보강
@@ -100,9 +101,9 @@
 - 현재 상태
   - `action-family-legacy-web` 0.2 개발 진행 중
 - 재시작 시 다음 우선순위
-  - Struts redirect-action / chain wildcard 세분화
-  - Struts 1 `struts-config.xml` 1차 지원
+  - `DynamicMappingFilter` boundary 정의
   - 실제 프로젝트 read-only gate 반복
+  - Struts 1 `struts-config.xml` 1차 지원은 0.3 후보로 분리
 
 ## Verification Baseline
 

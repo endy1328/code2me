@@ -55,13 +55,23 @@ describe("Action-family legacy web profile", () => {
     expect(requestMappings).toContain("/account/list.action");
     expect(requestMappings).toContain("/account/download.action");
     expect(requestMappings).toContain("/account/save.action");
+    expect(requestMappings).toContain("/person/*Person.action");
     expect(requestHandlers.some((handler) => handler.methodName === "list" && Array.isArray(handler.viewNames) && handler.viewNames.includes("account/list"))).toBe(true);
     expect(requestHandlers.some((handler) => handler.methodName === "download" && Array.isArray(handler.fileResponseHints) && handler.fileResponseHints.includes("stream-result"))).toBe(true);
     expect(requestHandlers.some((handler) => handler.methodName === "save" && Array.isArray(handler.redirectTargets) && handler.redirectTargets.includes("/account/list.action"))).toBe(true);
+    expect(requestHandlers.some((handler) =>
+      handler.methodName === "{1}Person" &&
+      Array.isArray(handler.requestMappings) &&
+      handler.requestMappings.includes("/person/*Person.action") &&
+      Array.isArray(handler.redirectTargets) &&
+      handler.redirectTargets.includes("/person/*Person.action") &&
+      handler.redirectTargets.includes("/account/list.action"),
+    )).toBe(true);
 
     const report = extractReportData(renderInteractiveReportAssets(result.snapshot).dataScript);
     expect(report.frameworkFlowCards.some((card) => card.entryPattern === "*.action")).toBe(true);
     expect(report.screenFlowCards.some((card) => card.route === "/account/list.action")).toBe(true);
+    expect(report.screenFlowCards.some((card) => card.route === "/person/*Person.action")).toBe(true);
     expect(report.apiFlowCards.some((card) => card.route === "/account/download.action")).toBe(true);
   });
 

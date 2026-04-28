@@ -10,4 +10,17 @@
       <result name="success" type="redirectAction">list</result>
     </action>
   </package>
+  <package name="person" namespace="/person" extends="struts-default">
+    <action name="*Person" class="com.example.action.AccountAction" method="{1}Person">
+      <result name="success">/WEB-INF/jsp/account/list.jsp</result>
+      <result name="next" type="redirectAction">
+        <param name="actionName">{1}Person</param>
+        <param name="namespace">/person</param>
+      </result>
+      <result name="chain" type="chain">
+        <param name="actionName">list</param>
+        <param name="namespace">/account</param>
+      </result>
+    </action>
+  </package>
 </struts>

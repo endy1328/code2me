@@ -261,20 +261,38 @@ function buildActionRoute(namespace: string | undefined, actionName: string, ext
   return `${normalizedNamespace}/${actionName}${extension}`.replace(/\/{2,}/g, "/");
 }
 
-function extractStrutsRedirectTarget(result: Record<string, unknown>, namespace: string | undefined, extension: string): string | undefined {
+function readStrutsResultParam(result: Record<string, unknown>, name: string): string | undefined {
+  const params = asArray(result.param).filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null);
+  const matched = params.find((param) => param.name === name);
+  return readTextValue(matched);
+}
+
+function substituteStrutsWildcardTokens(value: string, actionName: string): string {
+  const wildcardMatches = actionName.includes("*")
+    ? actionName.match(/\*/g)?.map(() => "*") ?? []
+    : [];
+  return value.replace(/\{(\d+)\}/g, (_match, index: string) => wildcardMatches[Number(index) - 1] ?? "*");
+}
+
+function extractStrutsRedirectTarget(result: Record<string, unknown>, namespace: string | undefined, actionName: string, extension: string): string | undefined {
   const type = typeof result.type === "string" ? result.type : "";
-  if (!/^redirect/i.test(type)) {
+  if (!/^(redirect|redirectAction|chain)/i.test(type)) {
     return undefined;
   }
   const rawValue = readTextValue(result);
-  if (/^redirectAction$/i.test(type)) {
-    const actionName = rawValue?.replace(/^\/+/, "").trim();
-    return actionName ? buildActionRoute(namespace, actionName, extension) : undefined;
+  if (/^(redirectAction|chain)$/i.test(type)) {
+    const targetActionName = readStrutsResultParam(result, "actionName") ?? rawValue;
+    const targetNamespace = readStrutsResultParam(result, "namespace") ?? namespace;
+    const normalizedActionName = targetActionName
+      ? substituteStrutsWildcardTokens(targetActionName, actionName).replace(/^\/+/, "").trim()
+      : "";
+    return normalizedActionName ? buildActionRoute(targetNamespace, normalizedActionName, extension) : undefined;
   }
   if (!rawValue) {
     return undefined;
   }
-  return normalizeRoute(rawValue.replace(/^\$\{/, "").replace(/\}$/, ""));
+  const target = substituteStrutsWildcardTokens(rawValue.replace(/^\$\{/, "").replace(/\}$/, ""), actionName);
+  return normalizeRoute(target);
 }
 
 export class ActionConfigAdapter implements AnalyzerAdapter {
@@ -449,7 +467,7 @@ export class ActionConfigAdapter implements AnalyzerAdapter {
             })
             .filter((value): value is string => Boolean(value)));
           const redirectTargets = uniqueStrings(results
-            .map((result) => extractStrutsRedirectTarget(result, namespace, actionExtension))
+            .map((result) => extractStrutsRedirectTarget(result, namespace, actionName, actionExtension))
             .filter((value): value is string => Boolean(value)));
           const fileResponseHints = results.some((result) => typeof result.type === "string" && result.type === "stream")
             ? ["stream-result"]
