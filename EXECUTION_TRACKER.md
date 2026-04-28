@@ -64,6 +64,7 @@
 - [x] 프로파일별 최소 메타모델 차이 메모 작성
 - [x] `action-family-legacy-web` 최소 골격 구현 시작
 - [x] `action-family-legacy-web` 0.2 개발 시작: Stripes session alias evidence 보존
+- [x] `code2me v0.2` 작업 계획 문서화
 
 ## Current Status
 
@@ -89,15 +90,18 @@
   - Struts `redirectAction` / Stripes self redirect 최소 해석 추가
   - Struts / Stripes 최소 fixture 추가
   - Stripes `session.getAttribute("/actions/*.action")` alias를 `Flow Details > Request Path` supporting evidence로 보존
+  - Stripes typed session alias `session.getAttribute("accountBean")`를 ActionBean route hint로 보존
   - request handler 병합 시 `sessionRouteHints` / `redirectActionClasses` 메타데이터 보존
   - split report asset 구조에 맞춘 회귀 테스트 정리
   - mapper namespace suffix fallback과 screen flow variant grouping 보강
+  - `dev_docs/03.development/007.code2me_v0.2_action_family_plan.md` 추가
   - README persona 반영
   - 관련 회귀 테스트 추가
 - 현재 상태
   - `action-family-legacy-web` 0.2 개발 진행 중
 - 재시작 시 다음 우선순위
-  - representative real-project gate 반복 적용
+  - Struts redirect-action / chain wildcard 세분화
+  - Struts 1 `struts-config.xml` 1차 지원
   - 실제 프로젝트 read-only gate 반복
 
 ## Verification Baseline

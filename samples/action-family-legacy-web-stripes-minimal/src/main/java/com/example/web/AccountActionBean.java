@@ -40,6 +40,12 @@ public class AccountActionBean implements ActionBean {
     return new ForwardResolution("/WEB-INF/jsp/account/list.jsp");
   }
 
+  @HandlesEvent("profile")
+  public Resolution profile() {
+    AccountActionBean accountBean = (AccountActionBean) context.getRequest().getSession().getAttribute("accountBean");
+    return new ForwardResolution("/WEB-INF/jsp/account/list.jsp");
+  }
+
   @Override
   public ActionBeanContext getContext() {
     return context;

@@ -167,8 +167,10 @@ function extractStripesViewNamesByMethod(content: string): Map<string, string[]>
   return result;
 }
 
-function extractStripesSessionRouteHintsByMethod(content: string): Map<string, string[]> {
+function extractStripesSessionRouteHintsByMethod(content: string, classFqn: string): Map<string, string[]> {
   const cleanContent = stripComments(content);
+  const packageName = /^\s*package\s+([\w.]+)\s*;/m.exec(cleanContent)?.[1];
+  const imports = Array.from(cleanContent.matchAll(/^\s*import\s+([\w.]+)\s*;/gm)).map((match) => match[1]).filter(Boolean) as string[];
   const result = new Map<string, string[]>();
   const signaturePattern = /((?:@\w+(?:\([^)]*\))?\s*)*)(?:public|protected|private)?\s*[\w<>\[\], ?.]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*(?:throws\s+[^{]+)?\{/g;
   let match: RegExpExecArray | null;
@@ -187,11 +189,23 @@ function extractStripesSessionRouteHintsByMethod(content: string): Map<string, s
       cursor += 1;
     }
     const methodBody = cleanContent.slice(openBraceIndex + 1, Math.max(openBraceIndex + 1, cursor - 1));
-    const hints = Array.from(new Set(Array.from(methodBody.matchAll(/getAttribute\s*\(\s*"(\/actions\/[^"]+\.action)"\s*\)/g))
+    const hints = new Set(Array.from(methodBody.matchAll(/getAttribute\s*\(\s*"(\/actions\/[^"]+\.action)"\s*\)/g))
       .map((aliasMatch) => (aliasMatch[1] ?? "").replace(/^\/actions/, ""))
-      .filter(Boolean)));
-    if (hints.length > 0) {
-      result.set(methodName, hints);
+      .filter(Boolean));
+    for (const aliasMatch of methodBody.matchAll(/([A-Z][A-Za-z0-9_<>.]*)\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*\(\s*([A-Z][A-Za-z0-9_<>.]*)\s*\)\s*[^;\n]*?getAttribute\s*\(\s*"([^"]+)"\s*\)/g)) {
+      const rawTypeName = ((aliasMatch[1] ?? aliasMatch[2]) ?? "").replace(/<.*$/, "").trim();
+      const alias = (aliasMatch[3] ?? "").trim();
+      if (!rawTypeName || !/^[a-zA-Z][A-Za-z0-9_]*Bean$/.test(alias)) {
+        continue;
+      }
+      const resolvedType = resolveTypeName(rawTypeName, imports, packageName);
+      const inferredRoute = inferActionRouteFromClassName(resolvedType || classFqn, uniqueStrings([]), "*.action");
+      if (inferredRoute) {
+        hints.add(inferredRoute);
+      }
+    }
+    if (hints.size > 0) {
+      result.set(methodName, Array.from(hints));
     }
     signaturePattern.lastIndex = Math.max(signaturePattern.lastIndex, cursor);
   }
@@ -537,7 +551,7 @@ export class ActionConfigAdapter implements AnalyzerAdapter {
       const sourceContent = sourcePath ? await readFile(`${context.projectRoot}/${sourcePath}`, "utf8").catch(() => "") : "";
       const viewNamesByMethod = sourceContent ? extractStripesViewNamesByMethod(sourceContent) : new Map<string, string[]>();
       const redirectActionClassesByMethod = sourceContent ? extractStripesRedirectActionClassesByMethod(sourceContent, className) : new Map<string, string[]>();
-      const sessionRouteHintsByMethod = sourceContent ? extractStripesSessionRouteHintsByMethod(sourceContent) : new Map<string, string[]>();
+      const sessionRouteHintsByMethod = sourceContent ? extractStripesSessionRouteHintsByMethod(sourceContent, className) : new Map<string, string[]>();
       const originalHandlers = Array.isArray(node.metadata?.requestHandlers)
         ? node.metadata.requestHandlers.filter((value): value is Record<string, unknown> => typeof value === "object" && value !== null)
         : [];

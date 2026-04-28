@@ -113,12 +113,23 @@ describe("Action-family legacy web profile", () => {
       Array.isArray(handler.sessionRouteHints) &&
       handler.sessionRouteHints.includes("/Account.action"),
     )).toBe(true);
+    expect(requestHandlers.some((handler) =>
+      handler.methodName === "profile" &&
+      Array.isArray(handler.requestMappings) &&
+      handler.requestMappings.includes("/account/list.action?profile") &&
+      Array.isArray(handler.sessionRouteHints) &&
+      handler.sessionRouteHints.includes("/Account.action"),
+    )).toBe(true);
 
     const report = extractReportData(renderInteractiveReportAssets(result.snapshot).dataScript);
     expect(report.frameworkFlowCards.some((card) => card.entryPattern === "*.action")).toBe(true);
     expect(report.screenFlowCards.some((card) => card.route === "/account/list.action")).toBe(true);
     expect(report.flowDetails.some((detail) =>
       String(detail.title).includes("/account/list.action?checkout") &&
+      JSON.stringify(detail).includes("session route hints: /Account.action"),
+    )).toBe(true);
+    expect(report.flowDetails.some((detail) =>
+      String(detail.title).includes("/account/list.action?profile") &&
       JSON.stringify(detail).includes("session route hints: /Account.action"),
     )).toBe(true);
   });

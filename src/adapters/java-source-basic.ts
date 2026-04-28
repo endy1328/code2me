@@ -445,6 +445,21 @@ function collectSessionRouteHintsFromMethodBody(
 ): string[] {
   const hints = new Set<string>();
 
+  for (const match of content.matchAll(/([A-Z][A-Za-z0-9_<>.]*)\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*\(\s*([A-Z][A-Za-z0-9_<>.]*)\s*\)\s*[^;\n]*?getAttribute\s*\(\s*"([^"]+)"\s*\)/g)) {
+    const rawTypeName = ((match[1] ?? match[2]) ?? "").replace(/<.*$/, "").trim();
+    const alias = (match[3] ?? "").trim();
+    if (!alias || !rawTypeName) {
+      continue;
+    }
+    if (/^[a-zA-Z][A-Za-z0-9_]*Bean$/.test(alias)) {
+      const resolvedType = resolveTypeName(rawTypeName, imports, packageName);
+      const inferredRoute = inferActionRouteFromClassName(resolvedType, [], "*.action");
+      if (inferredRoute) {
+        hints.add(inferredRoute);
+      }
+    }
+  }
+
   for (const match of content.matchAll(/(?:([A-Z][A-Za-z0-9_<>.]*)\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*)?(?:\([^)]+\)\s*)?[^;\n]*?getAttribute\s*\(\s*"([^"]+)"\s*\)/g)) {
     const rawTypeName = (match[1] ?? "").replace(/<.*$/, "").trim();
     const alias = (match[2] ?? "").trim();
