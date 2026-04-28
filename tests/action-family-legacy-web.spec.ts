@@ -70,6 +70,7 @@ describe("Action-family legacy web profile", () => {
 
     const report = extractReportData(renderInteractiveReportAssets(result.snapshot).dataScript);
     expect(report.frameworkFlowCards.some((card) => card.entryPattern === "*.action")).toBe(true);
+    expect(report.frameworkFlowCards.some((card) => card.entryPattern === "*.dyn")).toBe(true);
     expect(report.screenFlowCards.some((card) => card.route === "/account/list.action")).toBe(true);
     expect(report.screenFlowCards.some((card) => card.route === "/person/*Person.action")).toBe(true);
     expect(report.apiFlowCards.some((card) => card.route === "/account/download.action")).toBe(true);

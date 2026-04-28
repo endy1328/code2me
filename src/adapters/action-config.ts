@@ -354,7 +354,9 @@ export class ActionConfigAdapter implements AnalyzerAdapter {
           ? "struts"
           : filterClass.includes("StripesFilter")
             ? "stripes"
-            : undefined;
+            : filterClass.includes("DynamicMappingFilter")
+              ? "dynamic-action"
+              : undefined;
         if (!framework || !urlPattern) {
           continue;
         }
