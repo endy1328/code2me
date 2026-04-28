@@ -34,6 +34,12 @@ public class AccountActionBean implements ActionBean {
     return new RedirectResolution(getClass());
   }
 
+  @HandlesEvent("checkout")
+  public Resolution checkout() {
+    context.getRequest().getSession().getAttribute("/actions/Account.action");
+    return new ForwardResolution("/WEB-INF/jsp/account/list.jsp");
+  }
+
   @Override
   public ActionBeanContext getContext() {
     return context;

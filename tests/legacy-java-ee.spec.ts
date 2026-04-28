@@ -8,10 +8,17 @@ import { LegacyJavaEeProfile } from "../src/profiles/legacy-java-ee.js";
 
 function extractReportPayload(html: string): Record<string, unknown> {
   const match = html.match(/const report = (\{[\s\S]*\});\n    const translations = /);
-  if (!match) {
+  if (match) {
+    return JSON.parse(match[1]!);
+  }
+  const prefix = "window.__CODE2ME_REPORT__ = ";
+  const suffix = ";\nwindow.__CODE2ME_TRANSLATIONS__ = ";
+  const start = html.indexOf(prefix);
+  const end = html.indexOf(suffix);
+  if (start < 0 || end < 0) {
     throw new Error("report payload not found");
   }
-  return JSON.parse(match[1]!);
+  return JSON.parse(html.slice(start + prefix.length, end));
 }
 
 describe("Legacy Java EE vertical slice", () => {
@@ -46,25 +53,29 @@ describe("Legacy Java EE vertical slice", () => {
     ).toBe(true);
 
     const reportHtml = await readFile(resolve(projectRoot, ".code2me/report.html"), "utf8");
+    const reportData = await readFile(resolve(projectRoot, ".code2me/report-data.js"), "utf8");
     const internalReportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
-    expect(reportHtml).toContain("Interactive analysis report");
-    expect(internalReportHtml).toContain("Interactive analysis report");
-    expect(reportHtml).toContain("code2me Analysis Summary");
-    expect(reportHtml).toContain("/sample/list.as");
-    expect(reportHtml).toContain("Entry Flows");
-    expect(reportHtml).toContain("UI Request Flows");
-    expect(reportHtml).toContain("Flow Details");
-    expect(reportHtml).toContain("*.do");
-    expect(reportHtml).toContain("dispatcher-servlet.xml");
-    expect(reportHtml).toContain("Open Flow Details");
-    expect(reportHtml).toContain("Open Data Flow");
-    expect(reportHtml).toContain("UI Actions");
-    expect(reportHtml).toContain("sampleService");
-    expect(reportHtml).toContain("sampleDao");
+    const internalReportData = await readFile(result.outputPaths.internalReportDataPath, "utf8");
+    expect(reportHtml).toContain("report-data.js");
+    expect(internalReportHtml).toContain("report-data.js");
+    expect(reportData).toContain("Interactive analysis report");
+    expect(reportData).toContain("code2me Analysis Summary");
+    expect(reportData).toContain("/sample/list.as");
+    expect(reportData).toContain("Entry Flows");
+    expect(reportData).toContain("UI Request Flows");
+    expect(reportData).toContain("Flow Details");
+    expect(reportData).toContain("*.do");
+    expect(reportData).toContain("dispatcher-servlet.xml");
+    expect(reportData).toContain("Open Flow Details");
+    expect(reportData).toContain("Open Data Flow");
+    expect(reportData).toContain("UI Actions");
+    expect(reportData).toContain("sampleService");
+    expect(reportData).toContain("sampleDao");
+    expect(internalReportData).toContain("/sample/list.as");
     expect(result.outputPaths.internalProjectDir).toContain(".code2me-result/projects/legacy-java-ee-minimal");
     expect(result.outputPaths.targetWriteError).toBeUndefined();
 
-    const payload = extractReportPayload(reportHtml) as {
+    const payload = extractReportPayload(reportData) as {
       screenFlowCards: Array<{
         controllerPath?: string;
       }>;
@@ -121,7 +132,7 @@ describe("Legacy Java EE vertical slice", () => {
 
     expect(outputPaths.targetWriteError).toBeDefined();
     expect(outputPaths.internalProjectDir).toContain(".code2me-result/projects/readonly-project");
-    expect(internalReportHtml).toContain("Interactive analysis report");
+    expect(internalReportHtml).toContain("report-data.js");
   });
 
   it("promotes XML multi-action *.as mappings into searchable flows", async () => {
@@ -144,13 +155,13 @@ describe("Legacy Java EE vertical slice", () => {
     expect(listHandler?.requestMappings).toContain("/sample/list.as");
     expect(listHandler?.viewNames).toContain("sample/list");
 
-    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
-    expect(reportHtml).toContain("/sample/list.as");
-    expect(reportHtml).toContain("/sample/view.as");
-    expect(reportHtml).toContain("getSampleList");
-    expect(reportHtml).toContain("getSampleView");
+    const reportData = await readFile(result.outputPaths.internalReportDataPath, "utf8");
+    expect(reportData).toContain("/sample/list.as");
+    expect(reportData).toContain("/sample/view.as");
+    expect(reportData).toContain("getSampleList");
+    expect(reportData).toContain("getSampleView");
 
-    const payload = extractReportPayload(reportHtml) as {
+    const payload = extractReportPayload(reportData) as {
       flowDetails: Array<{
         title: string;
         sections: Array<{
@@ -196,8 +207,8 @@ describe("Legacy Java EE vertical slice", () => {
       call.targetName === "com.example.legacy.lib.ReportService" && call.methodName === "loadReportList",
     )).toBe(true);
 
-    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
-    const payload = extractReportPayload(reportHtml) as {
+    const reportData = await readFile(result.outputPaths.internalReportDataPath, "utf8");
+    const payload = extractReportPayload(reportData) as {
       screenFlowCards: Array<{
         route?: string;
         service?: string;
@@ -235,8 +246,8 @@ describe("Legacy Java EE vertical slice", () => {
     expect(result.snapshot.entryPoints.some((entry) => entry.metadata?.urlPattern === "*.do")).toBe(true);
     expect(result.snapshot.entryPoints.some((entry) => entry.metadata?.urlPattern === "/api/*")).toBe(true);
 
-    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
-    const payload = extractReportPayload(reportHtml) as {
+    const reportData = await readFile(result.outputPaths.internalReportDataPath, "utf8");
+    const payload = extractReportPayload(reportData) as {
       frameworkFlowCards: Array<{
         entryPattern?: string;
         dispatcherConfig?: string;
@@ -284,8 +295,8 @@ describe("Legacy Java EE vertical slice", () => {
       edge.to.includes("com.example.legacy.lib.AccountDao"),
     )).toBe(true);
 
-    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
-    const payload = extractReportPayload(reportHtml) as {
+    const reportData = await readFile(result.outputPaths.internalReportDataPath, "utf8");
+    const payload = extractReportPayload(reportData) as {
       screenFlowCards: Array<{
         route?: string;
         mapper?: string;
@@ -328,8 +339,8 @@ describe("Legacy Java EE vertical slice", () => {
     expect(result.profileDetection?.score).toBe(12);
     expect(result.profileDetection?.reasons).toEqual(["build.xml", "web.xml", "spring-xml", "jsp"]);
 
-    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
-    const payload = extractReportPayload(reportHtml) as {
+    const reportData = await readFile(result.outputPaths.internalReportDataPath, "utf8");
+    const payload = extractReportPayload(reportData) as {
       screenFlowCards: Array<{
         route?: string;
         service?: string;
@@ -398,8 +409,8 @@ describe("Legacy Java EE vertical slice", () => {
     expect(result.profileDetection?.matched).toBe(true);
     expect(result.profileDetection?.score).toBe(12);
 
-    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
-    const payload = extractReportPayload(reportHtml) as {
+    const reportData = await readFile(result.outputPaths.internalReportDataPath, "utf8");
+    const payload = extractReportPayload(reportData) as {
       screenFlowCards: Array<{
         route?: string;
       }>;
@@ -430,8 +441,8 @@ describe("Legacy Java EE vertical slice", () => {
       profile: new LegacyJavaEeProfile(),
     });
 
-    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
-    const payload = extractReportPayload(reportHtml) as {
+    const reportData = await readFile(result.outputPaths.internalReportDataPath, "utf8");
+    const payload = extractReportPayload(reportData) as {
       screenFlowCards: Array<{
         route?: string;
       }>;
@@ -464,8 +475,8 @@ describe("Legacy Java EE vertical slice", () => {
       profile: new LegacyJavaEeProfile(),
     });
 
-    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
-    const payload = extractReportPayload(reportHtml) as {
+    const reportData = await readFile(result.outputPaths.internalReportDataPath, "utf8");
+    const payload = extractReportPayload(reportData) as {
       flowDetails: Array<{
         title: string;
         sections: Array<{
@@ -496,8 +507,8 @@ describe("Legacy Java EE vertical slice", () => {
     expect(result.snapshot.nodes.some((node) => node.type === "config" && node.path?.endsWith("applicationContext-core.xml"))).toBe(true);
     expect(result.snapshot.nodes.some((node) => node.type === "config" && node.path?.endsWith("applicationContext-locale.xml"))).toBe(true);
 
-    const reportHtml = await readFile(result.outputPaths.internalReportPath, "utf8");
-    const payload = extractReportPayload(reportHtml) as {
+    const reportData = await readFile(result.outputPaths.internalReportDataPath, "utf8");
+    const payload = extractReportPayload(reportData) as {
       frameworkFlowCards: Array<{
         contextConfigs?: string[];
       }>;

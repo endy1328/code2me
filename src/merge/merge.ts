@@ -63,6 +63,8 @@ function mergeRequestHandlers(left: unknown, right: unknown): Record<string, unk
         produces: mergeStringArrays(handler.produces, []) ?? [],
         contentTypes: mergeStringArrays(handler.contentTypes, []) ?? [],
         redirectTargets: mergeStringArrays(handler.redirectTargets, []) ?? [],
+        redirectActionClasses: mergeStringArrays(handler.redirectActionClasses, []) ?? [],
+        sessionRouteHints: mergeStringArrays(handler.sessionRouteHints, []) ?? [],
         fileResponseHints: mergeStringArrays(handler.fileResponseHints, []) ?? [],
       });
       continue;
@@ -73,6 +75,8 @@ function mergeRequestHandlers(left: unknown, right: unknown): Record<string, unk
     existing.produces = mergeStringArrays(existing.produces, handler.produces) ?? [];
     existing.contentTypes = mergeStringArrays(existing.contentTypes, handler.contentTypes) ?? [];
     existing.redirectTargets = mergeStringArrays(existing.redirectTargets, handler.redirectTargets) ?? [];
+    existing.redirectActionClasses = mergeStringArrays(existing.redirectActionClasses, handler.redirectActionClasses) ?? [];
+    existing.sessionRouteHints = mergeStringArrays(existing.sessionRouteHints, handler.sessionRouteHints) ?? [];
     existing.fileResponseHints = mergeStringArrays(existing.fileResponseHints, handler.fileResponseHints) ?? [];
     const mergedServiceCalls = [
       ...(Array.isArray(existing.serviceCalls) ? existing.serviceCalls : []),

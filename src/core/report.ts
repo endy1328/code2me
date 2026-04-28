@@ -1565,14 +1565,21 @@ function collectDataFlowCards(snapshot: AnalysisSnapshot): DataFlowCard[] {
       daoNode.displayName,
       typeof daoNode.metadata?.className === "string" ? daoNode.metadata.className : undefined,
     ]).filter((value): value is string => typeof value === "string" && value.length > 0);
-    const daoStem = daoCandidates.map((value) => normalizeSymbolStem(value)).find(Boolean);
+    const tailStem = (value: string): string | undefined => normalizeSymbolStem(value.split(/[./:$\-_\\\s]/).filter(Boolean).pop());
+    const daoStems = uniqueStrings([
+      ...daoCandidates.map((value) => normalizeSymbolStem(value)),
+      ...daoCandidates.map(tailStem),
+    ].filter((value): value is string => Boolean(value)));
     let bestMatch: { mapperNode: GraphNode; sqlNodes: GraphNode[]; score: number } | undefined;
 
     for (const mapperNode of availableMapperNodes) {
       const namespace = typeof mapperNode.metadata?.namespace === "string" ? mapperNode.metadata.namespace : mapperNode.name;
       const mapperCandidates = uniqueStrings([mapperNode.name, mapperNode.displayName, namespace])
         .filter((value): value is string => typeof value === "string" && value.length > 0);
-      const mapperStem = mapperCandidates.map((value) => normalizeSymbolStem(value)).find(Boolean);
+      const mapperStems = uniqueStrings([
+        ...mapperCandidates.map((value) => normalizeSymbolStem(value)),
+        ...mapperCandidates.map(tailStem),
+      ].filter((value): value is string => Boolean(value)));
       let score = 0;
 
       for (const daoCandidate of daoCandidates) {
@@ -1587,7 +1594,7 @@ function collectDataFlowCards(snapshot: AnalysisSnapshot): DataFlowCard[] {
         }
       }
 
-      if (daoStem && mapperStem && daoStem === mapperStem) {
+      if (daoStems.some((daoStem) => mapperStems.includes(daoStem))) {
         score = Math.max(score, 3);
       }
 
@@ -1941,7 +1948,7 @@ function buildRequestFlowCards(
   const groupedScreenCards = new Map<string, ScreenCard[]>();
   for (const card of screenCards) {
     const groupingKey = card.view || card.layout
-      ? `screen:${card.controllerId ?? card.controller ?? card.title}:${card.action ?? "handler"}:${card.route ?? card.title}:${card.action === "handler" ? (card.view ?? card.layout ?? card.id) : ""}`
+      ? `screen:${card.controllerId ?? card.controller ?? card.title}:${card.action ?? "handler"}:${card.route ?? card.title}`
       : `api:${card.id}`;
     const existing = groupedScreenCards.get(groupingKey) ?? [];
     existing.push(card);
@@ -3567,7 +3574,23 @@ export function renderInteractiveReportAssets(snapshot: AnalysisSnapshot, flowDa
 }
 
 export function renderInteractiveHtmlReport(snapshot: AnalysisSnapshot, flowData?: FlowReportData): string {
-  return renderInteractiveReportAssets(snapshot, flowData).html;
+  const assets = renderInteractiveReportAssets(snapshot, flowData);
+  const reportMatch = assets.dataScript.match(/^window\.__CODE2ME_REPORT__ = ([\s\S]*?);\nwindow\.__CODE2ME_TRANSLATIONS__ = /);
+  const translationsMatch = assets.dataScript.match(/\nwindow\.__CODE2ME_TRANSLATIONS__ = ([\s\S]*);$/);
+  if (!reportMatch || !translationsMatch) {
+    return assets.html;
+  }
+  const inlineData = [
+    "  <script>",
+    "    {",
+    `    const report = ${reportMatch[1]};`,
+    `    const translations = ${translationsMatch[1]};`,
+    "    window.__CODE2ME_REPORT__ = report;",
+    "    window.__CODE2ME_TRANSLATIONS__ = translations;",
+    "    }",
+    "  </script>",
+  ].join("\n");
+  return assets.html.replace('  <script src="report-data.js"></script>', inlineData);
 }
 
 function renderStandalonePage(options: {

@@ -2853,7 +2853,7 @@ describe("interactive report entry flow synthesis", () => {
           confidence: "medium",
           evidence: [],
           metadata: {
-            requestMappings: ["/admin/list.as", "/admin/detail.as"],
+            requestMappings: ["/admin/list.as"],
           },
         }),
         createNode({
